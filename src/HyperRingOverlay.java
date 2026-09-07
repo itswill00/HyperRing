@@ -33,6 +33,7 @@ import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.InputStreamReader;
 import java.lang.reflect.Method;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -82,6 +83,17 @@ public class HyperRingOverlay {
     private static int expandTimeoutMs         = 3500;
     private static long lastConfigModified     = 0L;
 
+
+    // 2-Stage window bounds optimization
+    private static float animBoundingX = 0f;
+    private static float animBoundingY = 0f;
+    private static float animBoundingW = 0f;
+    private static float animBoundingH = 0f;
+    private static float lastTargetX = -9999f;
+    private static float lastTargetY = -9999f;
+    private static float lastTargetW = -9999f;
+    private static float lastTargetH = -9999f;
+
     // Island states
     public static final int STATE_IDLE         = 0;
     public static final int STATE_CHARGING     = 1;
@@ -107,6 +119,7 @@ public class HyperRingOverlay {
     private static volatile boolean isCharging = false;
     private static volatile String chargeWattStr = "33W";
     private static volatile String chargeCurrentStr = "4200mA";
+    private static volatile String batteryTempStr = "36.5°C";
     private static volatile String hyperCoreProfile = "Interactive";
 
     // Telemetry: Media
@@ -122,6 +135,8 @@ public class HyperRingOverlay {
     
     // Telemetry: Notification
     private static volatile String notifAppName = "Notification";
+    private static volatile String notifTitle = "";
+    private static volatile String notifContent = "";
     
     // Telemetry: HyperDL
     private static volatile boolean isHyperDLActive = false;
@@ -194,6 +209,10 @@ public class HyperRingOverlay {
             }
             return true;
         }
+
+        public boolean isMoving() {
+            return Math.abs(velocity) > 0.05f || Math.abs(current - target) > 0.05f;
+        }
     }
 
     // Geometry Springs
@@ -203,6 +222,15 @@ public class HyperRingOverlay {
     private static Spring springH;
     private static Spring springR;
     private static Spring springContentAlpha;
+
+    private static boolean isAnySpringMoving() {
+        return (springX != null && springX.isMoving())
+                || (springY != null && springY.isMoving())
+                || (springW != null && springW.isMoving())
+                || (springH != null && springH.isMoving())
+                || (springR != null && springR.isMoving())
+                || (springContentAlpha != null && springContentAlpha.isMoving());
+    }
 
     // Visualizer simulation bars
     private static float[] barHeights = new float[]{0.3f, 0.7f, 0.5f, 0.9f};
@@ -487,11 +515,20 @@ public class HyperRingOverlay {
 
                     if (chargingNow && !isCharging && enableCharging) {
                         isCharging = true;
+                        readBatteryHardwareTelemetry();
                         triggerChargingEvent();
+                    } else if (chargingNow && isCharging) {
+                        readBatteryHardwareTelemetry();
                     } else if (!chargingNow) {
                         isCharging = false;
                         if (currentIsland == STATE_CHARGING) {
-                            currentIsland = STATE_IDLE;
+                            if (isMediaPlaying && enableMedia) {
+                                currentIsland = STATE_MEDIA;
+                            } else if (isHyperDLActive && enableHyperDL) {
+                                currentIsland = STATE_HYPERDL;
+                            } else {
+                                currentIsland = STATE_IDLE;
+                            }
                             isExpanded = false;
                         }
                     }
@@ -644,11 +681,20 @@ public class HyperRingOverlay {
 
         @Override
         public boolean onTouchEvent(MotionEvent event) {
+            if (params == null) return false;
             float x = event.getX();
             float y = event.getY();
 
+            float pillRelX = springX.current - params.x;
+            float pillRelY = springY.current - params.y;
+            float pillW = springW.current;
+            float pillH = springH.current;
+
+            boolean insidePill = (x >= pillRelX && x <= pillRelX + pillW && y >= pillRelY && y <= pillRelY + pillH);
+
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
+                    if (!insidePill) return false;
                     touchDownX = x;
                     touchDownY = y;
                     return true;
@@ -666,10 +712,11 @@ public class HyperRingOverlay {
                     return true;
 
                 case MotionEvent.ACTION_UP:
+                    if (!insidePill) return false;
                     float totalDistX = Math.abs(x - touchDownX);
                     float totalDistY = Math.abs(y - touchDownY);
                     if (totalDistX < dpToPx(14) && totalDistY < dpToPx(14)) {
-                        handleTap(x, y);
+                        handleTap(x - pillRelX, y - pillRelY);
                     }
                     return true;
 
@@ -682,7 +729,16 @@ public class HyperRingOverlay {
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            renderIsland(canvas, getWidth(), getHeight());
+            if (params == null) return;
+            float pillRelX = springX.current - params.x;
+            float pillRelY = springY.current - params.y;
+            float pillW = springW.current;
+            float pillH = springH.current;
+
+            canvas.save();
+            canvas.translate(pillRelX, pillRelY);
+            renderIsland(canvas, pillW, pillH);
+            canvas.restore();
         }
     }
 
@@ -693,10 +749,10 @@ public class HyperRingOverlay {
                 expandCollapseTime = 0L;
             }
         } else {
-            if (currentIsland == STATE_MEDIA) {
-                float viewW = ringView.getWidth();
-                float viewH = ringView.getHeight();
+            float viewW = springW.current;
+            float viewH = springH.current;
 
+            if (currentIsland == STATE_MEDIA) {
                 float btnY = viewH - dpToPx(22);
                 float centerX = viewW / 2.0f;
                 float prevBtnX = centerX - dpToPx(65);
@@ -715,6 +771,9 @@ public class HyperRingOverlay {
                         return;
                     }
                 }
+            } else if (currentIsland == STATE_TORCH) {
+                toggleTorchNative();
+                return;
             }
             isExpanded = false;
         }
@@ -767,71 +826,87 @@ public class HyperRingOverlay {
 
         float holeRelX = cutoutCenterX - springX.current;
         float holeR = cutoutRadius;
+        boolean isCutoutCenter = Math.abs(cutoutCenterX - (displayWidthPx / 2.0f)) < (displayWidthPx * 0.15f);
+        boolean isCutoutLeft = cutoutCenterX < displayWidthPx * 0.35f;
 
-        // Balanced layout around camera cutout
-        float leftCenter = Math.max(dpToPx(14), (holeRelX - holeR) / 2.0f);
-        float rightCenter = (holeRelX + holeR) + (curW - (holeRelX + holeR)) / 2.0f;
+        float iconCenterX;
+        float textCenterX;
+        Paint.Align textAlign;
+
+        if (isCutoutLeft) {
+            iconCenterX = holeRelX + holeR + dpToPx(14);
+            textCenterX = curW - dpToPx(18);
+            textAlign = Paint.Align.RIGHT;
+        } else if (!isCutoutCenter) {
+            iconCenterX = dpToPx(18);
+            textCenterX = holeRelX - holeR - dpToPx(14);
+            textAlign = Paint.Align.RIGHT;
+        } else {
+            iconCenterX = Math.max(dpToPx(14), (holeRelX - holeR) / 2.0f);
+            textCenterX = (holeRelX + holeR) + (curW - (holeRelX + holeR)) / 2.0f;
+            textAlign = Paint.Align.CENTER;
+        }
 
         if (currentIsland == STATE_CHARGING) {
             paintAccentGreen.setAlpha(intAlpha);
-            drawBoltIcon(canvas, leftCenter, centerY, dpToPx(11), paintAccentGreen);
+            drawBoltIcon(canvas, iconCenterX, centerY, dpToPx(11), paintAccentGreen);
 
             paintTextPrimary.setTextSize(spToPx(12f));
-            paintTextPrimary.setTextAlign(Paint.Align.CENTER);
+            paintTextPrimary.setTextAlign(textAlign);
             paintTextPrimary.setAlpha(intAlpha);
-            canvas.drawText(batteryPct + "%", rightCenter, centerY + dpToPx(4), paintTextPrimary);
+            canvas.drawText(batteryPct + "%", textCenterX, centerY + dpToPx(4), paintTextPrimary);
 
         } else if (currentIsland == STATE_MEDIA) {
             paintAccentCyan.setAlpha(intAlpha);
-            canvas.drawCircle(leftCenter, centerY, dpToPx(5), paintAccentCyan);
+            canvas.drawCircle(iconCenterX, centerY, dpToPx(5), paintAccentCyan);
 
-            float barsStart = rightCenter - dpToPx(10);
+            float barsStart = isCutoutCenter ? (textCenterX - dpToPx(10)) : (textCenterX - dpToPx(20));
             renderAudioBars(canvas, barsStart, centerY, alpha);
 
         } else if (currentIsland == STATE_VOLUME) {
             paintAccentCyan.setAlpha(intAlpha);
-            drawSpeakerIcon(canvas, leftCenter, centerY, dpToPx(12), volumePercent, paintAccentCyan);
+            drawSpeakerIcon(canvas, iconCenterX, centerY, dpToPx(12), volumePercent, paintAccentCyan);
 
             paintTextPrimary.setTextSize(spToPx(11.5f));
-            paintTextPrimary.setTextAlign(Paint.Align.CENTER);
+            paintTextPrimary.setTextAlign(textAlign);
             paintTextPrimary.setAlpha(intAlpha);
-            canvas.drawText(volumePercent + "%", rightCenter, centerY + dpToPx(4), paintTextPrimary);
+            canvas.drawText(volumePercent + "%", textCenterX, centerY + dpToPx(4), paintTextPrimary);
 
         } else if (currentIsland == STATE_RINGER) {
             paintAccentAmber.setAlpha(intAlpha);
-            drawBellIcon(canvas, leftCenter, centerY, dpToPx(12), paintAccentAmber);
+            drawBellIcon(canvas, iconCenterX, centerY, dpToPx(12), ringerLabel, paintAccentAmber);
 
             paintTextPrimary.setTextSize(spToPx(11.5f));
-            paintTextPrimary.setTextAlign(Paint.Align.CENTER);
+            paintTextPrimary.setTextAlign(textAlign);
             paintTextPrimary.setAlpha(intAlpha);
-            canvas.drawText(ringerLabel, rightCenter, centerY + dpToPx(4), paintTextPrimary);
+            canvas.drawText(ringerLabel, textCenterX, centerY + dpToPx(4), paintTextPrimary);
 
         } else if (currentIsland == STATE_NOTIFICATION) {
             paintAccentAmber.setAlpha(intAlpha);
-            drawMessageIcon(canvas, leftCenter, centerY, dpToPx(11), paintAccentAmber);
+            drawMessageIcon(canvas, iconCenterX, centerY, dpToPx(11), paintAccentAmber);
 
             paintTextPrimary.setTextSize(spToPx(11f));
-            paintTextPrimary.setTextAlign(Paint.Align.CENTER);
+            paintTextPrimary.setTextAlign(textAlign);
             paintTextPrimary.setAlpha(intAlpha);
-            canvas.drawText(truncate(notifAppName, 10), rightCenter, centerY + dpToPx(4), paintTextPrimary);
+            canvas.drawText(truncate(notifAppName, 10), textCenterX, centerY + dpToPx(4), paintTextPrimary);
 
         } else if (currentIsland == STATE_TORCH) {
             paintAccentAmber.setAlpha(intAlpha);
-            drawTorchIcon(canvas, leftCenter, centerY, dpToPx(11), paintAccentAmber);
+            drawTorchIcon(canvas, iconCenterX, centerY, dpToPx(11), paintAccentAmber);
 
             paintTextPrimary.setTextSize(spToPx(11.5f));
-            paintTextPrimary.setTextAlign(Paint.Align.CENTER);
+            paintTextPrimary.setTextAlign(textAlign);
             paintTextPrimary.setAlpha(intAlpha);
-            canvas.drawText("Torch", rightCenter, centerY + dpToPx(4), paintTextPrimary);
+            canvas.drawText("Torch", textCenterX, centerY + dpToPx(4), paintTextPrimary);
 
         } else if (currentIsland == STATE_HYPERDL) {
             paintAccentCyan.setAlpha(intAlpha);
-            canvas.drawCircle(leftCenter, centerY, dpToPx(4.5f), paintAccentCyan);
+            drawDownloadIcon(canvas, iconCenterX, centerY, dpToPx(10), paintAccentCyan);
 
             paintTextPrimary.setTextSize(spToPx(11));
-            paintTextPrimary.setTextAlign(Paint.Align.CENTER);
+            paintTextPrimary.setTextAlign(textAlign);
             paintTextPrimary.setAlpha(intAlpha);
-            canvas.drawText(hyperDLSpeed, rightCenter, centerY + dpToPx(4), paintTextPrimary);
+            canvas.drawText(hyperDLSpeed, textCenterX, centerY + dpToPx(4), paintTextPrimary);
         }
     }
 
@@ -857,26 +932,62 @@ public class HyperRingOverlay {
         paintTextTertiary.setAlpha(Math.min(255, (int) (alpha * 95)));
         paintIconFill.setAlpha(intAlpha);
 
+        float holeRelX = cutoutCenterX - springX.current;
         float holeRelY = cutoutCenterY - springY.current;
+        float holeR = cutoutRadius;
+        boolean isCutoutCenter = Math.abs(cutoutCenterX - (displayWidthPx / 2.0f)) < (displayWidthPx * 0.15f);
+        boolean isCutoutLeft = cutoutCenterX < displayWidthPx * 0.35f;
 
         if (currentIsland == STATE_CHARGING) {
-            // Top Row: Left of cutout and Right of cutout
-            paintAccentGreen.setAlpha(intAlpha);
-            drawBoltIcon(canvas, dpToPx(22), holeRelY, dpToPx(14), paintAccentGreen);
+            float holeTopRowY = Math.max(dpToPx(18), holeRelY);
 
-            paintTextPrimary.setTextSize(spToPx(13));
-            paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText("Super Charge", dpToPx(38), holeRelY + dpToPx(4.5f), paintTextPrimary);
+            if (isCutoutLeft) {
+                float startX = holeRelX + holeR + dpToPx(12);
+                paintAccentGreen.setAlpha(intAlpha);
+                drawBoltIcon(canvas, startX + dpToPx(8), holeTopRowY, dpToPx(14), paintAccentGreen);
 
-            // Right of cutout: large bold percentage
-            paintTextPrimary.setTextSize(spToPx(17));
-            paintTextPrimary.setColor(Color.parseColor("#34D399"));
-            paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
-            canvas.drawText(batteryPct + "%", curW - dpToPx(20), holeRelY + dpToPx(5.5f), paintTextPrimary);
-            paintTextPrimary.setColor(Color.WHITE); // Reset
+                paintTextPrimary.setTextSize(spToPx(13.5f));
+                paintTextPrimary.setTextAlign(Paint.Align.LEFT);
+                canvas.drawText("Super Charge", startX + dpToPx(24), holeTopRowY + dpToPx(5), paintTextPrimary);
+
+                paintTextPrimary.setTextSize(spToPx(17));
+                paintTextPrimary.setColor(Color.parseColor("#34D399"));
+                paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
+                canvas.drawText(batteryPct + "%", curW - dpToPx(20), holeTopRowY + dpToPx(6), paintTextPrimary);
+                paintTextPrimary.setColor(Color.WHITE);
+
+            } else if (!isCutoutCenter) {
+                float endX = holeRelX - holeR - dpToPx(12);
+                paintAccentGreen.setAlpha(intAlpha);
+                drawBoltIcon(canvas, dpToPx(22), holeTopRowY, dpToPx(14), paintAccentGreen);
+
+                paintTextPrimary.setTextSize(spToPx(13.5f));
+                paintTextPrimary.setTextAlign(Paint.Align.LEFT);
+                canvas.drawText("Super Charge", dpToPx(38), holeTopRowY + dpToPx(5), paintTextPrimary);
+
+                paintTextPrimary.setTextSize(spToPx(17));
+                paintTextPrimary.setColor(Color.parseColor("#34D399"));
+                paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
+                canvas.drawText(batteryPct + "%", endX, holeTopRowY + dpToPx(6), paintTextPrimary);
+                paintTextPrimary.setColor(Color.WHITE);
+
+            } else {
+                paintAccentGreen.setAlpha(intAlpha);
+                drawBoltIcon(canvas, dpToPx(22), holeTopRowY, dpToPx(14), paintAccentGreen);
+
+                paintTextPrimary.setTextSize(spToPx(13.5f));
+                paintTextPrimary.setTextAlign(Paint.Align.LEFT);
+                canvas.drawText("Super Charge", dpToPx(38), holeTopRowY + dpToPx(5), paintTextPrimary);
+
+                paintTextPrimary.setTextSize(spToPx(17));
+                paintTextPrimary.setColor(Color.parseColor("#34D399"));
+                paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
+                canvas.drawText(batteryPct + "%", curW - dpToPx(20), holeTopRowY + dpToPx(6), paintTextPrimary);
+                paintTextPrimary.setColor(Color.WHITE);
+            }
 
             // Middle Row: Fluid horizontal charging level progress track
-            float barY = dpToPx(50);
+            float barY = Math.max(dpToPx(50), holeRelY + holeR + dpToPx(8));
             float barW = curW - dpToPx(40);
             paintTrack.setAlpha(Math.min(255, (int) (alpha * 35)));
             canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + barW, barY + dpToPx(6)), dpToPx(3), dpToPx(3), paintTrack);
@@ -885,18 +996,18 @@ public class HyperRingOverlay {
             float fillRatio = Math.max(0.04f, Math.min(1.0f, batteryPct / 100f));
             float fillW = barW * fillRatio;
             canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + fillW, barY + dpToPx(6)), dpToPx(3), dpToPx(3), paintAccentGreen);
-            // Glowing head
             canvas.drawCircle(dpToPx(20) + fillW, barY + dpToPx(3), dpToPx(4), paintAccentGreen);
 
             // Bottom Row: Power telemetry and HyperCore profile
-            float bottomY = dpToPx(82);
+            float bottomY = barY + dpToPx(28);
             paintTextSecondary.setTextSize(spToPx(11.5f));
             paintTextSecondary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText(chargeWattStr + " Turbo · " + chargeCurrentStr, dpToPx(20), bottomY, paintTextSecondary);
+            canvas.drawText(chargeWattStr + " · " + chargeCurrentStr, dpToPx(20), bottomY, paintTextSecondary);
 
             paintTextTertiary.setTextSize(spToPx(11f));
             paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
-            canvas.drawText("HyperCore: " + hyperCoreProfile, curW - dpToPx(20), bottomY, paintTextTertiary);
+            String rightSub = (!batteryTempStr.isEmpty() ? batteryTempStr + " · " : "") + "HyperCore: " + hyperCoreProfile;
+            canvas.drawText(rightSub, curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (currentIsland == STATE_MEDIA) {
             float artSize = dpToPx(48);
@@ -916,13 +1027,13 @@ public class HyperRingOverlay {
             float textLeft = artLeft + artSize + dpToPx(14);
             paintTextPrimary.setTextSize(spToPx(14));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText(truncate(mediaTitle, 22), textLeft, artTop + dpToPx(20), paintTextPrimary);
+            canvas.drawText(truncate(mediaTitle, 20), textLeft, artTop + dpToPx(20), paintTextPrimary);
 
             paintTextSecondary.setTextSize(spToPx(12));
-            canvas.drawText(truncate(mediaArtist.isEmpty() ? "Media" : mediaArtist, 24), textLeft, artTop + dpToPx(38), paintTextSecondary);
+            canvas.drawText(truncate(mediaArtist.isEmpty() ? "Media Playback" : mediaArtist, 22), textLeft, artTop + dpToPx(38), paintTextSecondary);
 
             // Progress track
-            float barY = dpToPx(82);
+            float barY = dpToPx(76);
             float barW = curW - dpToPx(36);
             paintTrack.setAlpha(Math.min(255, (int) (alpha * 40)));
             canvas.drawRoundRect(new RectF(dpToPx(18), barY, dpToPx(18) + barW, barY + dpToPx(2.5f)), dpToPx(2), dpToPx(2), paintTrack);
@@ -946,16 +1057,16 @@ public class HyperRingOverlay {
 
         } else if (currentIsland == STATE_VOLUME) {
             paintAccentCyan.setAlpha(intAlpha);
-            drawSpeakerIcon(canvas, dpToPx(24), holeRelY, dpToPx(14), volumePercent, paintAccentCyan);
+            drawSpeakerIcon(canvas, dpToPx(24), dpToPx(22), dpToPx(14), volumePercent, paintAccentCyan);
 
             paintTextPrimary.setTextSize(spToPx(14));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText("Media Volume", dpToPx(44), holeRelY + dpToPx(5), paintTextPrimary);
+            canvas.drawText("Media Volume", dpToPx(44), dpToPx(27), paintTextPrimary);
 
             paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
-            canvas.drawText(volumePercent + "%", curW - dpToPx(20), holeRelY + dpToPx(5), paintTextPrimary);
+            canvas.drawText(volumePercent + "%", curW - dpToPx(20), dpToPx(27), paintTextPrimary);
 
-            float barY = dpToPx(54);
+            float barY = dpToPx(46);
             float barW = curW - dpToPx(40);
             paintTrack.setAlpha(Math.min(255, (int) (alpha * 35)));
             canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + barW, barY + dpToPx(8)), dpToPx(4), dpToPx(4), paintTrack);
@@ -964,22 +1075,106 @@ public class HyperRingOverlay {
             float fillRatio = Math.max(0.04f, Math.min(1.0f, volumePercent / 100f));
             canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + (barW * fillRatio), barY + dpToPx(8)), dpToPx(4), dpToPx(4), paintAccentCyan);
 
-        } else if (currentIsland == STATE_HYPERDL) {
+            float bottomY = barY + dpToPx(24);
+            paintTextTertiary.setTextSize(spToPx(11f));
+            paintTextTertiary.setTextAlign(Paint.Align.LEFT);
+            canvas.drawText("Stream Music · Output Speaker", dpToPx(20), bottomY, paintTextTertiary);
+
+            paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
+            canvas.drawText(volumePercent == 0 ? "Muted" : "Active", curW - dpToPx(20), bottomY, paintTextTertiary);
+
+        } else if (currentIsland == STATE_RINGER) {
+            paintAccentAmber.setAlpha(intAlpha);
+            drawBellIcon(canvas, dpToPx(24), dpToPx(22), dpToPx(14), ringerLabel, paintAccentAmber);
+
             paintTextPrimary.setTextSize(spToPx(14));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText("HyperDL Download", dpToPx(20), dpToPx(30), paintTextPrimary);
+            canvas.drawText("Ringer Profile", dpToPx(44), dpToPx(27), paintTextPrimary);
 
-            paintTextSecondary.setTextSize(spToPx(12));
-            canvas.drawText(truncate(hyperDLFile, 28) + " · " + hyperDLSpeed, dpToPx(20), dpToPx(48), paintTextSecondary);
+            paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
+            paintTextPrimary.setColor(Color.parseColor("#FBBF24"));
+            canvas.drawText(ringerLabel, curW - dpToPx(20), dpToPx(27), paintTextPrimary);
+            paintTextPrimary.setColor(Color.WHITE);
 
-            float barY = dpToPx(68);
+            float descY = dpToPx(52);
+            paintTextSecondary.setTextSize(spToPx(12f));
+            paintTextSecondary.setTextAlign(Paint.Align.LEFT);
+            String desc = "Calls and notifications audible";
+            if ("Silent".equalsIgnoreCase(ringerLabel)) desc = "Alarms and media only · Calls muted";
+            else if ("Vibrate".equalsIgnoreCase(ringerLabel)) desc = "Calls and alerts will vibrate";
+            canvas.drawText(desc, dpToPx(20), descY, paintTextSecondary);
+
+            float bottomY = dpToPx(74);
+            paintTextTertiary.setTextSize(spToPx(11f));
+            canvas.drawText("Hardware state synchronized", dpToPx(20), bottomY, paintTextTertiary);
+
+        } else if (currentIsland == STATE_NOTIFICATION) {
+            paintAccentAmber.setAlpha(intAlpha);
+            drawMessageIcon(canvas, dpToPx(24), dpToPx(22), dpToPx(13), paintAccentAmber);
+
+            paintTextPrimary.setTextSize(spToPx(13.5f));
+            paintTextPrimary.setTextAlign(Paint.Align.LEFT);
+            canvas.drawText(notifAppName, dpToPx(44), dpToPx(26), paintTextPrimary);
+
+            paintTextTertiary.setTextSize(spToPx(11f));
+            paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
+            canvas.drawText("Just now", curW - dpToPx(20), dpToPx(26), paintTextTertiary);
+
+            float titleY = dpToPx(48);
+            paintTextPrimary.setTextSize(spToPx(13f));
+            paintTextPrimary.setTextAlign(Paint.Align.LEFT);
+            String displayTitle = (notifTitle != null && !notifTitle.isEmpty()) ? notifTitle : notifAppName;
+            canvas.drawText(truncate(displayTitle, 30), dpToPx(20), titleY, paintTextPrimary);
+
+            float contentY = dpToPx(70);
+            paintTextSecondary.setTextSize(spToPx(11.5f));
+            String displayContent = (notifContent != null && !notifContent.isEmpty()) ? notifContent : "New notification received";
+            canvas.drawText(truncate(displayContent, 36), dpToPx(20), contentY, paintTextSecondary);
+
+        } else if (currentIsland == STATE_TORCH) {
+            paintAccentAmber.setAlpha(intAlpha);
+            drawTorchIcon(canvas, dpToPx(24), dpToPx(24), dpToPx(14), paintAccentAmber);
+
+            paintTextPrimary.setTextSize(spToPx(14));
+            paintTextPrimary.setTextAlign(Paint.Align.LEFT);
+            canvas.drawText("Flashlight Active", dpToPx(44), dpToPx(29), paintTextPrimary);
+
+            paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
+            paintTextPrimary.setColor(Color.parseColor("#FBBF24"));
+            canvas.drawText("On", curW - dpToPx(20), dpToPx(29), paintTextPrimary);
+            paintTextPrimary.setColor(Color.WHITE);
+
+            float descY = dpToPx(58);
+            paintTextSecondary.setTextSize(spToPx(12f));
+            paintTextSecondary.setTextAlign(Paint.Align.LEFT);
+            canvas.drawText("Rear LED illuminated · Tap to toggle", dpToPx(20), descY, paintTextSecondary);
+
+        } else if (currentIsland == STATE_HYPERDL) {
+            paintAccentCyan.setAlpha(intAlpha);
+            drawDownloadIcon(canvas, dpToPx(24), dpToPx(22), dpToPx(12), paintAccentCyan);
+
+            paintTextPrimary.setTextSize(spToPx(13.5f));
+            paintTextPrimary.setTextAlign(Paint.Align.LEFT);
+            canvas.drawText("HyperDL Engine", dpToPx(44), dpToPx(27), paintTextPrimary);
+
+            paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
+            paintTextPrimary.setColor(Color.parseColor("#38BDF8"));
+            canvas.drawText(hyperDLSpeed, curW - dpToPx(20), dpToPx(27), paintTextPrimary);
+            paintTextPrimary.setColor(Color.WHITE);
+
+            float fileY = dpToPx(48);
+            paintTextSecondary.setTextSize(spToPx(11.5f));
+            paintTextSecondary.setTextAlign(Paint.Align.LEFT);
+            canvas.drawText(truncate(hyperDLFile, 30), dpToPx(20), fileY, paintTextSecondary);
+
+            float barY = dpToPx(66);
             float barW = curW - dpToPx(40);
             paintTrack.setAlpha(Math.min(255, (int) (alpha * 40)));
-            canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + barW, barY + dpToPx(3)), dpToPx(2), dpToPx(2), paintTrack);
+            canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + barW, barY + dpToPx(4)), dpToPx(2), dpToPx(2), paintTrack);
 
             paintAccentCyan.setAlpha(intAlpha);
-            float fillRatio = Math.max(0.05f, Math.min(1.0f, hyperDLProgress / 100f));
-            canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + (barW * fillRatio), barY + dpToPx(3)), dpToPx(2), dpToPx(2), paintAccentCyan);
+            float fillRatio = Math.max(0.04f, Math.min(1.0f, hyperDLProgress / 100f));
+            canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + (barW * fillRatio), barY + dpToPx(4)), dpToPx(2), dpToPx(2), paintAccentCyan);
         }
     }
 
@@ -1018,7 +1213,8 @@ public class HyperRingOverlay {
         }
     }
 
-    private static void drawBellIcon(Canvas canvas, float cx, float cy, float size, Paint paint) {
+
+    private static void drawBellIcon(Canvas canvas, float cx, float cy, float size, String mode, Paint paint) {
         Path p = new Path();
         p.moveTo(cx, cy - size * 0.45f);
         p.quadTo(cx + size * 0.35f, cy - size * 0.4f, cx + size * 0.35f, cy + size * 0.2f);
@@ -1029,11 +1225,45 @@ public class HyperRingOverlay {
         p.close();
         canvas.drawPath(p, paint);
         canvas.drawCircle(cx, cy + size * 0.45f, size * 0.1f, paint);
+
+        if ("Silent".equalsIgnoreCase(mode)) {
+            Paint slashP = new Paint(paint);
+            slashP.setStyle(Paint.Style.STROKE);
+            slashP.setStrokeWidth(dpToPx(1.4f));
+            canvas.drawLine(cx - size * 0.45f, cy + size * 0.45f, cx + size * 0.45f, cy - size * 0.45f, slashP);
+        } else if ("Vibrate".equalsIgnoreCase(mode)) {
+            Paint arcP = new Paint(paint);
+            arcP.setStyle(Paint.Style.STROKE);
+            arcP.setStrokeWidth(dpToPx(1.1f));
+            canvas.drawArc(new RectF(cx - size * 0.7f, cy - size * 0.3f, cx - size * 0.3f, cy + size * 0.3f), 135, 90, false, arcP);
+            canvas.drawArc(new RectF(cx + size * 0.3f, cy - size * 0.3f, cx + size * 0.7f, cy + size * 0.3f), -45, 90, false, arcP);
+        }
     }
 
     private static void drawMessageIcon(Canvas canvas, float cx, float cy, float size, Paint paint) {
-        tempRectF.set(cx - size * 0.45f, cy - size * 0.35f, cx + size * 0.45f, cy + size * 0.35f);
-        canvas.drawRoundRect(tempRectF, dpToPx(2), dpToPx(2), paint);
+        Path p = new Path();
+        float w = size * 0.85f;
+        float h = size * 0.65f;
+        float l = cx - w / 2f;
+        float t = cy - h / 2f - size * 0.05f;
+        float r = l + w;
+        float b = t + h;
+        float cr = dpToPx(2.5f);
+
+        p.moveTo(l + cr, t);
+        p.lineTo(r - cr, t);
+        p.quadTo(r, t, r, t + cr);
+        p.lineTo(r, b - cr);
+        p.quadTo(r, b, r - cr, b);
+        p.lineTo(l + w * 0.45f, b);
+        p.lineTo(l + w * 0.2f, b + size * 0.2f);
+        p.lineTo(l + w * 0.25f, b);
+        p.lineTo(l + cr, b);
+        p.quadTo(l, b, l, b - cr);
+        p.lineTo(l, t + cr);
+        p.quadTo(l, t, l + cr, t);
+        p.close();
+        canvas.drawPath(p, paint);
     }
 
     private static void drawTorchIcon(Canvas canvas, float cx, float cy, float size, Paint paint) {
@@ -1046,6 +1276,22 @@ public class HyperRingOverlay {
         p.lineTo(cx - size * 0.2f, cy - size * 0.1f);
         p.close();
         canvas.drawPath(p, paint);
+    }
+
+    private static void drawDownloadIcon(Canvas canvas, float cx, float cy, float size, Paint paint) {
+        Path p = new Path();
+        p.moveTo(cx, cy + size * 0.35f);
+        p.lineTo(cx - size * 0.32f, cy + size * 0.03f);
+        p.lineTo(cx - size * 0.12f, cy + size * 0.03f);
+        p.lineTo(cx - size * 0.12f, cy - size * 0.45f);
+        p.lineTo(cx + size * 0.12f, cy - size * 0.45f);
+        p.lineTo(cx + size * 0.12f, cy + size * 0.03f);
+        p.lineTo(cx + size * 0.32f, cy + size * 0.03f);
+        p.close();
+        canvas.drawPath(p, paint);
+
+        tempRectF.set(cx - size * 0.38f, cy + size * 0.42f, cx + size * 0.38f, cy + size * 0.52f);
+        canvas.drawRoundRect(tempRectF, dpToPx(1), dpToPx(1), paint);
     }
 
     private static void drawPlayIcon(Canvas canvas, float cx, float cy, float size, Paint paint) {
@@ -1176,7 +1422,13 @@ public class HyperRingOverlay {
                 expandCollapseTime = now + 3500;
             } else if (currentIsland == STATE_CHARGING || currentIsland == STATE_VOLUME
                     || currentIsland == STATE_RINGER || currentIsland == STATE_NOTIFICATION || currentIsland == STATE_TORCH) {
-                currentIsland = STATE_IDLE;
+                if (isMediaPlaying && enableMedia) {
+                    currentIsland = STATE_MEDIA;
+                } else if (isHyperDLActive && enableHyperDL) {
+                    currentIsland = STATE_HYPERDL;
+                } else {
+                    currentIsland = STATE_IDLE;
+                }
                 expandCollapseTime = 0L;
             }
         }
@@ -1284,6 +1536,29 @@ public class HyperRingOverlay {
             targetX = Math.max(dpToPx(8), Math.min(displayWidthPx - targetW - dpToPx(8), targetX));
         }
 
+        boolean targetChanged = (targetX != lastTargetX || targetY != lastTargetY || targetW != lastTargetW || targetH != lastTargetH);
+        if (targetChanged) {
+            float curX = (springX != null) ? springX.current : targetX;
+            float curY = (springY != null) ? springY.current : targetY;
+            float curW = (springW != null) ? springW.current : targetW;
+            float curH = (springH != null) ? springH.current : targetH;
+
+            float minX = Math.min(curX, targetX);
+            float minY = Math.min(curY, targetY);
+            float maxX = Math.max(curX + curW, targetX + targetW);
+            float maxY = Math.max(curY + curH, targetY + targetH);
+
+            animBoundingX = minX;
+            animBoundingY = minY;
+            animBoundingW = maxX - minX;
+            animBoundingH = maxY - minY;
+
+            lastTargetX = targetX;
+            lastTargetY = targetY;
+            lastTargetW = targetW;
+            lastTargetH = targetH;
+        }
+
         springX.setTarget(targetX);
         springY.setTarget(targetY);
         springW.setTarget(targetW);
@@ -1295,11 +1570,6 @@ public class HyperRingOverlay {
     private static void updateWindowBounds() {
         if (params == null || windowManager == null || ringView == null) return;
 
-        int reqW = Math.max(1, Math.round(springW.current));
-        int reqH = Math.max(1, Math.round(springH.current));
-        int newX = Math.round(springX.current);
-        int newY = Math.round(springY.current);
-
         int targetFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
@@ -1309,14 +1579,32 @@ public class HyperRingOverlay {
             targetFlags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         }
 
+        boolean moving = isAnySpringMoving();
+        int reqX;
+        int reqY;
+        int reqW;
+        int reqH;
+
+        if (moving) {
+            reqX = Math.max(0, Math.round(animBoundingX));
+            reqY = Math.max(0, Math.round(animBoundingY));
+            reqW = Math.max(1, Math.round(animBoundingW));
+            reqH = Math.max(1, Math.round(animBoundingH));
+        } else {
+            reqX = Math.round(springX.current);
+            reqY = Math.round(springY.current);
+            reqW = Math.max(1, Math.round(springW.current));
+            reqH = Math.max(1, Math.round(springH.current));
+        }
+
         boolean layoutChanged = params.width != reqW || params.height != reqH
-                || params.x != newX || params.y != newY || params.flags != targetFlags;
+                || params.x != reqX || params.y != reqY || params.flags != targetFlags;
 
         if (layoutChanged) {
             params.width = reqW;
             params.height = reqH;
-            params.x = newX;
-            params.y = newY;
+            params.x = reqX;
+            params.y = reqY;
             params.flags = targetFlags;
             try {
                 windowManager.updateViewLayout(ringView, params);
@@ -1347,8 +1635,11 @@ public class HyperRingOverlay {
                     if (enableHyperDL) {
                         queryHyperDLStatusNative();
                     }
-                    if (enableHyperCore && isCharging) {
-                        readHyperCoreStatusNative();
+                    if (isCharging) {
+                        readBatteryHardwareTelemetry();
+                        if (enableHyperCore) {
+                            readHyperCoreStatusNative();
+                        }
                     }
 
                     // Auto state transitions (priority-based)
@@ -1384,10 +1675,20 @@ public class HyperRingOverlay {
                     java.lang.Process p = Runtime.getRuntime().exec(new String[]{"logcat", "-b", "events", "-v", "raw", "-s", "notification_enqueue"});
                     BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
                     String line;
+                    Pattern flagPattern = Pattern.compile("flags=0x([0-9a-fA-F]+)");
                     while ((line = reader.readLine()) != null) {
                         if (!enableNotifications || !isScreenInteractive) continue;
-                        // Format: [uid, pid, pkg, id, tag, ...]
                         if (line.contains("notification_enqueue:")) {
+                            Matcher fm = flagPattern.matcher(line);
+                            if (fm.find()) {
+                                try {
+                                    int flags = Integer.parseInt(fm.group(1), 16);
+                                    if ((flags & (0x02 | 0x40)) != 0) {
+                                        continue;
+                                    }
+                                } catch (Throwable ignored) {}
+                            }
+
                             int idx = line.indexOf("[");
                             if (idx != -1) {
                                 String body = line.substring(idx + 1);
@@ -1395,7 +1696,8 @@ public class HyperRingOverlay {
                                 if (parts.length >= 3) {
                                     String pkg = parts[2].trim();
                                     if (isUserFacingPackage(pkg)) {
-                                                                                notifAppName = resolveFriendlyAppName(pkg);
+                                        notifAppName = resolveFriendlyAppName(pkg);
+                                        queryNotificationDetailsAsync(pkg);
                                         currentIsland = STATE_NOTIFICATION;
                                         isExpanded = false;
                                         expandCollapseTime = SystemClock.uptimeMillis() + 3200;
@@ -1429,6 +1731,47 @@ public class HyperRingOverlay {
         if (pkg.contains("messaging") || pkg.contains("mms")) return "Messages";
         int dot = pkg.lastIndexOf(".");
         return dot != -1 ? pkg.substring(dot + 1) : pkg;
+    }
+
+    private static void queryNotificationDetailsAsync(final String pkg) {
+        workerPool.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    java.lang.Process p = Runtime.getRuntime().exec(new String[]{"dumpsys", "notification", "--noredact"});
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                    String line;
+                    boolean inTarget = false;
+                    String title = "";
+                    String text = "";
+                    while ((line = reader.readLine()) != null) {
+                        if (line.contains("NotificationRecord(") && line.contains("pkg=" + pkg)) {
+                            inTarget = true;
+                            title = "";
+                            text = "";
+                        } else if (inTarget && line.contains("NotificationRecord(")) {
+                            break;
+                        } else if (inTarget) {
+                            if (line.contains("android.title=") && title.isEmpty()) {
+                                int sIdx = line.indexOf("String (");
+                                if (sIdx != -1) {
+                                    title = line.substring(sIdx + 8, line.length() - 1);
+                                }
+                            } else if (line.contains("android.text=") && text.isEmpty()) {
+                                int sIdx = line.indexOf("String (");
+                                if (sIdx != -1) {
+                                    text = line.substring(sIdx + 8, line.length() - 1);
+                                }
+                            }
+                        }
+                    }
+                    reader.close();
+                    p.destroy();
+                    if (!title.isEmpty()) notifTitle = title;
+                    if (!text.isEmpty()) notifContent = text;
+                } catch (Throwable ignored) {}
+            }
+        });
     }
 
     private static void queryMediaSessionNative() {
@@ -1505,6 +1848,33 @@ public class HyperRingOverlay {
         }).start();
     }
 
+    private static void toggleTorchNative() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    CameraManager cm = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+                    if (cm != null) {
+                        String[] ids = cm.getCameraIdList();
+                        if (ids != null && ids.length > 0) {
+                            try {
+                                cm.setTorchMode("0", currentIsland != STATE_TORCH);
+                                return;
+                            } catch (Throwable t) {
+                                for (String id : ids) {
+                                    try {
+                                        cm.setTorchMode(id, currentIsland != STATE_TORCH);
+                                        return;
+                                    } catch (Throwable ignored) {}
+                                }
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }).start();
+    }
+
     private static void queryHyperDLStatusNative() {
         File f = new File("/data/local/tmp/hyperdl_status.json");
         if (!f.exists()) {
@@ -1530,6 +1900,43 @@ public class HyperRingOverlay {
         } catch (Throwable ignored) {
             isHyperDLActive = false;
         }
+    }
+
+    private static void readBatteryHardwareTelemetry() {
+        try {
+            long currentUa = readLongFromFile("/sys/class/power_supply/battery/current_now");
+            long voltageUv = readLongFromFile("/sys/class/power_supply/battery/voltage_now");
+            long tempTenths = readLongFromFile("/sys/class/power_supply/battery/temp");
+
+            if (tempTenths > 0) {
+                float tempC = tempTenths / 10.0f;
+                batteryTempStr = String.format(Locale.US, "%.1f°C", tempC);
+            }
+
+            if (currentUa != 0 && voltageUv != 0) {
+                double currentA = Math.abs(currentUa) / 1000000.0;
+                double voltageV = voltageUv / 1000000.0;
+                double watt = currentA * voltageV;
+                int currentMa = (int) Math.round(Math.abs(currentUa) / 1000.0);
+
+                if (watt > 0.5) {
+                    chargeWattStr = String.format(Locale.US, "%.1fW", watt);
+                    chargeCurrentStr = currentMa + "mA";
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static long readLongFromFile(String path) {
+        File f = new File(path);
+        if (!f.exists()) return 0L;
+        try (BufferedReader br = new BufferedReader(new FileReader(f))) {
+            String line = br.readLine();
+            if (line != null) {
+                return Long.parseLong(line.trim());
+            }
+        } catch (Throwable ignored) {}
+        return 0L;
     }
 
     private static void readHyperCoreStatusNative() {
@@ -1601,29 +2008,66 @@ public class HyperRingOverlay {
                 String cmd = br.readLine();
                 if (cmd != null) {
                     cmd = cmd.trim();
-                    if ("charge".equalsIgnoreCase(cmd)) {
+                    if (cmd.startsWith("charge")) {
+                        readBatteryHardwareTelemetry();
                         triggerChargingEvent();
-                    } else if ("media".equalsIgnoreCase(cmd)) {
+                    } else if (cmd.startsWith("media")) {
                         currentIsland = STATE_MEDIA;
                         isMediaPlaying = true;
                         mediaTitle = "Starboy";
                         mediaArtist = "The Weeknd";
                         isExpanded = false;
-                    } else if ("volume".equalsIgnoreCase(cmd)) {
+                    } else if (cmd.startsWith("volume")) {
+                        String[] parts = cmd.split(":");
+                        if (parts.length > 1) {
+                            try { volumePercent = Integer.parseInt(parts[1].trim()); } catch (Exception ignored) {}
+                        } else {
+                            volumePercent = 75;
+                        }
                         currentIsland = STATE_VOLUME;
-                        volumePercent = 75;
                         isExpanded = false;
                         expandCollapseTime = SystemClock.uptimeMillis() + 2000;
-                    } else if ("notification".equalsIgnoreCase(cmd)) {
+                    } else if (cmd.startsWith("ringer")) {
+                        String[] parts = cmd.split(":");
+                        if (parts.length > 1) {
+                            ringerLabel = parts[1].trim();
+                        } else {
+                            ringerLabel = "Silent";
+                        }
+                        currentIsland = STATE_RINGER;
+                        isExpanded = false;
+                        expandCollapseTime = SystemClock.uptimeMillis() + 2200;
+                    } else if (cmd.startsWith("notif") || cmd.startsWith("notification")) {
+                        String[] parts = cmd.split(":");
+                        if (parts.length > 3) {
+                            notifAppName = parts[1].trim();
+                            notifTitle = parts[2].trim();
+                            notifContent = parts[3].trim();
+                        } else if (parts.length > 2) {
+                            notifAppName = parts[1].trim();
+                            notifTitle = parts[2].trim();
+                            notifContent = "New message received";
+                        } else if (parts.length > 1) {
+                            notifAppName = parts[1].trim();
+                            notifTitle = "Notification";
+                            notifContent = "New update available";
+                        } else {
+                            notifAppName = "Telegram";
+                            notifTitle = "Alex";
+                            notifContent = "Build completed successfully";
+                        }
                         currentIsland = STATE_NOTIFICATION;
-                        notifAppName = "WhatsApp";
                         isExpanded = false;
                         expandCollapseTime = SystemClock.uptimeMillis() + 3200;
-                    } else if ("torch".equalsIgnoreCase(cmd)) {
-                        currentIsland = STATE_TORCH;
-                        isExpanded = false;
-                        expandCollapseTime = SystemClock.uptimeMillis() + 2600;
-                    } else if ("hyperdl".equalsIgnoreCase(cmd)) {
+                    } else if (cmd.startsWith("torch")) {
+                        if (currentIsland == STATE_TORCH) {
+                            currentIsland = STATE_IDLE;
+                        } else {
+                            currentIsland = STATE_TORCH;
+                            isExpanded = false;
+                            expandCollapseTime = SystemClock.uptimeMillis() + 2600;
+                        }
+                    } else if (cmd.startsWith("hyperdl") || cmd.startsWith("download")) {
                         currentIsland = STATE_HYPERDL;
                         isHyperDLActive = true;
                         hyperDLSpeed = "12.4 MB/s";

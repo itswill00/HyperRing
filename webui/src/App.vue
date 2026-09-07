@@ -1,373 +1,501 @@
 <template>
   <div class="app-shell">
-    <!-- Top App Bar -->
+    <!-- Top Header -->
     <header class="page-header">
       <div>
         <div class="page-header-title">HyperRing</div>
-        <div class="page-header-sub">Dynamic Cutout Engine</div>
+        <div class="page-header-sub">Punch-hole overlay</div>
       </div>
       <span class="badge-pill" :class="isDaemonAlive ? 'active' : 'standby'">
-        {{ isDaemonAlive ? `Active · PID ${daemonPid}` : 'Standby' }}
+        {{ isDaemonAlive ? (daemonPid ? `Active · ${daemonPid}` : 'Active') : 'Standby' }}
       </span>
     </header>
 
-    <!-- Main Content Area -->
+    <!-- Segmented Navigation Tabs -->
+    <nav class="tabs-nav">
+      <button
+        type="button"
+        class="tab-btn"
+        :class="{ active: currentTab === 'cutout' }"
+        @click="currentTab = 'cutout'"
+      >
+        Cutout
+      </button>
+      <button
+        type="button"
+        class="tab-btn"
+        :class="{ active: currentTab === 'features' }"
+        @click="currentTab = 'features'"
+      >
+        Events
+      </button>
+      <button
+        type="button"
+        class="tab-btn"
+        :class="{ active: currentTab === 'motion' }"
+        @click="currentTab = 'motion'"
+      >
+        Motion
+      </button>
+      <button
+        type="button"
+        class="tab-btn"
+        :class="{ active: currentTab === 'tools' }"
+        @click="currentTab = 'tools'"
+      >
+        Tools
+      </button>
+    </nav>
+
+    <!-- Main Scrollable Area -->
     <main class="content-area">
 
-      <!-- Hero Dashboard Card -->
-      <section class="md3-card">
-        <div class="card-hero-row">
-          <div class="icon-badge">
-            <Icons name="circle" :size="20" />
-          </div>
-          <div class="hero-meta">
-            <div class="hero-title">Punch-Hole Status Pill</div>
-            <div class="hero-sub">Dynamic status expansion around the camera cutout</div>
-          </div>
-          <label class="md3-switch">
-            <input type="checkbox" :checked="isDaemonAlive" @change="toggleDaemon" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-
-        <div class="hero-stats-grid">
-          <div class="hero-stat-box">
-            <span class="stat-lbl">Alignment</span>
-            <span class="stat-val">{{ config.cutout_x }}x{{ config.cutout_y }} (r={{ config.cutout_radius }})</span>
-          </div>
-          <div class="hero-stat-box">
-            <span class="stat-lbl">Active State</span>
-            <span class="stat-val">{{ liveState.active_island || 'Idle' }}</span>
-          </div>
-          <div class="hero-stat-box">
-            <span class="stat-lbl">Battery</span>
-            <span class="stat-val">{{ liveState.battery_pct || 100 }}% {{ liveState.battery_charging ? '(Chg)' : '' }}</span>
-          </div>
-          <div class="hero-stat-box">
-            <span class="stat-lbl">HyperCore</span>
-            <span class="stat-val">{{ liveState.hypercore_profile || 'Interactive' }}</span>
-          </div>
-        </div>
-      </section>
-
-      <!-- Section: Cutout Calibration -->
-      <div class="section-title">Cutout Calibration</div>
-      <section class="md3-card">
-        <div class="preset-row">
-          <span class="row-meta-label">Position Presets</span>
-          <div class="segment-container">
-            <button type="button" class="segment-btn" :class="{ active: currentPreset === 'center' }" @click="applyPreset('center')">Center</button>
-            <button type="button" class="segment-btn" :class="{ active: currentPreset === 'left' }" @click="applyPreset('left')">Left</button>
-            <button type="button" class="segment-btn" :class="{ active: currentPreset === 'right' }" @click="applyPreset('right')">Right</button>
-            <button type="button" class="segment-btn" :class="{ active: currentPreset === 'auto' }" @click="autoDetectCutout">Auto</button>
-          </div>
-        </div>
-
-        <!-- Horizontal X Offset -->
-        <div class="stepper-setting-block">
-          <div class="stepper-header">
-            <div>
-              <div class="stepper-title">Horizontal Center (X)</div>
-              <div class="stepper-sub">Horizontal coordinate aligned with camera lens</div>
+      <!-- TAB 1: CUTOUT CALIBRATION -->
+      <div v-if="currentTab === 'cutout'">
+        <!-- Live Cutout Simulator Preview -->
+        <div class="section-title">Visual simulator</div>
+        <div class="sim-bezel-box">
+          <div class="sim-screen-boundary">
+            <!-- Simulated Pill -->
+            <div
+              class="sim-pill"
+              :style="{
+                left: simPillLeft + '%',
+                top: simPillTop + 'px',
+                width: simPillWidth + 'px',
+                height: simPillHeight + 'px'
+              }"
+            >
+              <span style="font-size: 8px; color: #9ea3b2; opacity: 0.85;">{{ liveState.battery_pct || 100 }}%</span>
+              <span style="font-size: 8px; color: #f0f2f5; opacity: 0.85;">Hyper</span>
             </div>
-            <div class="stepper-controls">
-              <button type="button" class="step-btn" @click="stepValue('cutout_x', -1)"><Icons name="minus" :size="12" /></button>
+            <!-- Physical Camera Cutout -->
+            <div
+              class="sim-punch-hole"
+              :style="{
+                left: simCutoutLeft + '%',
+                top: simCutoutTop + 'px',
+                width: simCutoutSize + 'px',
+                height: simCutoutSize + 'px'
+              }"
+            ></div>
+          </div>
+        </div>
+
+        <div class="section-title">Camera placement</div>
+        <section class="md3-card">
+          <!-- Alignment Presets -->
+          <div class="preset-row">
+            <span class="row-meta-label">Position preset</span>
+            <div class="segment-container">
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentPreset === 'center' }"
+                @click="applyPreset('center')"
+              >
+                Center
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentPreset === 'left' }"
+                @click="applyPreset('left')"
+              >
+                Left
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentPreset === 'right' }"
+                @click="applyPreset('right')"
+              >
+                Right
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentPreset === 'auto' }"
+                @click="autoDetectCutout"
+              >
+                Auto
+              </button>
+            </div>
+          </div>
+
+          <!-- Horizontal Position X -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Horizontal offset (X)</span>
               <span class="stepper-val">{{ config.cutout_x }} px</span>
-              <button type="button" class="step-btn" @click="stepValue('cutout_x', 1)"><Icons name="plus" :size="12" /></button>
             </div>
+            <input
+              type="range"
+              min="0"
+              max="1080"
+              step="1"
+              v-model.number="config.cutout_x"
+              @input="saveConfigDebounced"
+              class="slider-range"
+            />
           </div>
-          <input type="range" min="0" max="1080" step="1" v-model.number="config.cutout_x" @input="saveConfigDebounced" class="slider-range" />
-        </div>
 
-        <!-- Vertical Y Offset -->
-        <div class="stepper-setting-block">
-          <div class="stepper-header">
-            <div>
-              <div class="stepper-title">Vertical Center (Y)</div>
-              <div class="stepper-sub">Vertical offset from top screen boundary</div>
-            </div>
-            <div class="stepper-controls">
-              <button type="button" class="step-btn" @click="stepValue('cutout_y', -1)"><Icons name="minus" :size="12" /></button>
+          <!-- Vertical Position Y -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Vertical offset (Y)</span>
               <span class="stepper-val">{{ config.cutout_y }} px</span>
-              <button type="button" class="step-btn" @click="stepValue('cutout_y', 1)"><Icons name="plus" :size="12" /></button>
             </div>
+            <input
+              type="range"
+              min="0"
+              max="160"
+              step="1"
+              v-model.number="config.cutout_y"
+              @input="saveConfigDebounced"
+              class="slider-range"
+            />
           </div>
-          <input type="range" min="0" max="160" step="1" v-model.number="config.cutout_y" @input="saveConfigDebounced" class="slider-range" />
-        </div>
 
-        <!-- Cutout Radius -->
-        <div class="stepper-setting-block">
-          <div class="stepper-header">
-            <div>
-              <div class="stepper-title">Cutout Radius</div>
-              <div class="stepper-sub">Physical punch-hole radius for edge coverage</div>
-            </div>
-            <div class="stepper-controls">
-              <button type="button" class="step-btn" @click="stepValue('cutout_radius', -1)"><Icons name="minus" :size="12" /></button>
+          <!-- Cutout Radius -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Camera radius</span>
               <span class="stepper-val">{{ config.cutout_radius }} px</span>
-              <button type="button" class="step-btn" @click="stepValue('cutout_radius', 1)"><Icons name="plus" :size="12" /></button>
             </div>
+            <input
+              type="range"
+              min="15"
+              max="60"
+              step="1"
+              v-model.number="config.cutout_radius"
+              @input="saveConfigDebounced"
+              class="slider-range"
+            />
           </div>
-          <input type="range" min="15" max="60" step="1" v-model.number="config.cutout_radius" @input="saveConfigDebounced" class="slider-range" />
-        </div>
 
-        <!-- Calibration Reticle Action -->
-        <button type="button" class="action-btn-secondary" @click="triggerCalibration">
-          <Icons name="crosshair" :size="15" />
-          <span>Show Calibration Reticle on Screen</span>
-        </button>
-      </section>
-
-      <!-- Section: Feature Islands & Triggers -->
-      <div class="section-title">Island Integrations</div>
-      <section class="md3-list-group">
-        <div class="md3-list-row" @click="toggleConfig('enable_media')">
-          <div class="row-left">
-            <div class="icon-badge secondary">
-              <Icons name="music" :size="16" />
-            </div>
-            <div class="row-meta">
-              <div class="row-title">Media Session Listener</div>
-              <div class="row-sub">Track title, artist, audio waveform, and playback controls</div>
-            </div>
-          </div>
-          <label class="md3-switch" @click.stop>
-            <input type="checkbox" v-model="config.enable_media" @change="saveConfig" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-
-        <div class="md3-list-row" @click="toggleConfig('enable_charging')">
-          <div class="row-left">
-            <div class="icon-badge secondary">
-              <Icons name="bolt" :size="16" />
-            </div>
-            <div class="row-meta">
-              <div class="row-title">Battery Power Alerts</div>
-              <div class="row-sub">Super Charge wattage, current telemetry, and percentage</div>
-            </div>
-          </div>
-          <label class="md3-switch" @click.stop>
-            <input type="checkbox" v-model="config.enable_charging" @change="saveConfig" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-
-        <div class="md3-list-row" @click="toggleConfig('auto_expand_charging')">
-          <div class="row-left">
-            <div class="icon-badge secondary">
-              <Icons name="maximize" :size="16" />
-            </div>
-            <div class="row-meta">
-              <div class="row-title">Auto-Expand on Plug</div>
-              <div class="row-sub">Open expanded power card when charger is plugged in</div>
-            </div>
-          </div>
-          <label class="md3-switch" @click.stop>
-            <input type="checkbox" v-model="config.auto_expand_charging" @change="saveConfig" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-
-        <div class="md3-list-row" @click="toggleConfig('enable_hyperdl')">
-          <div class="row-left">
-            <div class="icon-badge secondary">
-              <Icons name="download" :size="16" />
-            </div>
-            <div class="row-meta">
-              <div class="row-title">HyperDL Download Tracker</div>
-              <div class="row-sub">Transfer speed and download progress indicator</div>
-            </div>
-          </div>
-          <label class="md3-switch" @click.stop>
-            <input type="checkbox" v-model="config.enable_hyperdl" @change="saveConfig" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-
-        <div class="md3-list-row" @click="toggleConfig('enable_volume')">
-          <div class="row-left">
-            <div class="icon-badge secondary">
-              <Icons name="wave" :size="16" />
-            </div>
-            <div class="row-meta">
-              <div class="row-title">Volume Key Expansion</div>
-              <div class="row-sub">Liquid volume slider pill when hardware keys are pressed</div>
-            </div>
-          </div>
-          <label class="md3-switch" @click.stop>
-            <input type="checkbox" v-model="config.enable_volume" @change="saveConfig" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-
-        <div class="md3-list-row" @click="toggleConfig('enable_ringer')">
-          <div class="row-left">
-            <div class="icon-badge secondary">
-              <Icons name="circle" :size="16" />
-            </div>
-            <div class="row-meta">
-              <div class="row-title">Ringer Mode Status</div>
-              <div class="row-sub">Indicator on silent, vibrate, or sound mode transitions</div>
-            </div>
-          </div>
-          <label class="md3-switch" @click.stop>
-            <input type="checkbox" v-model="config.enable_ringer" @change="saveConfig" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-
-        <div class="md3-list-row" @click="toggleConfig('enable_notifications')">
-          <div class="row-left">
-            <div class="icon-badge secondary">
-              <Icons name="lens" :size="16" />
-            </div>
-            <div class="row-meta">
-              <div class="row-title">Notification Pill Bloom</div>
-              <div class="row-sub">Display incoming app notifications dynamically</div>
-            </div>
-          </div>
-          <label class="md3-switch" @click.stop>
-            <input type="checkbox" v-model="config.enable_notifications" @change="saveConfig" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-
-        <div class="md3-list-row" @click="toggleConfig('enable_hypercore')">
-          <div class="row-left">
-            <div class="icon-badge secondary">
-              <Icons name="chip" :size="16" />
-            </div>
-            <div class="row-meta">
-              <div class="row-title">HyperCore Governor Sync</div>
-              <div class="row-sub">Display governor profile changes in expanded card</div>
-            </div>
-          </div>
-          <label class="md3-switch" @click.stop>
-            <input type="checkbox" v-model="config.enable_hypercore" @change="saveConfig" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-      </section>
-
-      <!-- Section: Motion & Ergonomics -->
-      <div class="section-title">Motion &amp; Ergonomics</div>
-      <section class="md3-card">
-        <div class="preset-row">
-          <span class="row-meta-label">Spring Curves</span>
-          <div class="segment-container">
-            <button type="button" class="segment-btn" :class="{ active: currentMotionProfile === 'fluid' }" @click="applyMotionPreset('fluid')">HyperOS</button>
-            <button type="button" class="segment-btn" :class="{ active: currentMotionProfile === 'kinetic' }" @click="applyMotionPreset('kinetic')">Kinetic</button>
-            <button type="button" class="segment-btn" :class="{ active: currentMotionProfile === 'snappy' }" @click="applyMotionPreset('snappy')">Snappy</button>
-          </div>
-        </div>
-
-        <div class="stepper-setting-block">
-          <div class="stepper-header">
-            <div>
-              <div class="stepper-title">Spring Stiffness (k)</div>
-              <div class="stepper-sub">Expansion and morphing velocity response</div>
-            </div>
-            <span class="stepper-val">{{ config.spring_stiffness }}</span>
-          </div>
-          <input type="range" min="200" max="600" step="10" v-model.number="config.spring_stiffness" @input="saveConfigDebounced" class="slider-range" />
-        </div>
-
-        <div class="stepper-setting-block">
-          <div class="stepper-header">
-            <div>
-              <div class="stepper-title">Damping Ratio (zeta)</div>
-              <div class="stepper-sub">Fluid oscillation and elastic settlement</div>
-            </div>
-            <span class="stepper-val">{{ config.spring_damping }}</span>
-          </div>
-          <input type="range" min="0.50" max="0.95" step="0.02" v-model.number="config.spring_damping" @input="saveConfigDebounced" class="slider-range" />
-        </div>
-
-        <div class="inner-divider"></div>
-
-        <div class="setting-toggle-line" @click="toggleConfig('hide_in_landscape')">
-          <div>
-            <div class="stepper-title">Hide in Landscape</div>
-            <div class="stepper-sub">Automatically suspend overlay during gaming and video playback</div>
-          </div>
-          <label class="md3-switch" @click.stop>
-            <input type="checkbox" v-model="config.hide_in_landscape" @change="saveConfig" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-
-        <div class="setting-toggle-line" @click="toggleConfig('stealth_ring_idle')">
-          <div>
-            <div class="stepper-title">Stealth Ring in Idle</div>
-            <div class="stepper-sub">Show 1px minimal ring around punch hole when idle</div>
-          </div>
-          <label class="md3-switch" @click.stop>
-            <input type="checkbox" v-model="config.stealth_ring_idle" @change="saveConfig" />
-            <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-          </label>
-        </div>
-      </section>
-
-      <!-- Section: Live Test & Diagnostics -->
-      <div class="section-title">Live Test &amp; Diagnostics</div>
-      <section class="md3-card">
-        <div class="sim-label">Simulate Real-Time Events</div>
-        <div class="action-chips-grid">
-          <button type="button" class="sim-chip" @click="sendTrigger('charge')">
-            <Icons name="bolt" :size="13" />
-            <span>Charge</span>
+          <!-- Reticle Trigger Button -->
+          <button type="button" class="action-btn-secondary" @click="triggerCalibration">
+            <Icons name="crosshair" :size="15" />
+            <span>Show alignment reticle</span>
           </button>
-          <button type="button" class="sim-chip" @click="sendTrigger('media')">
-            <Icons name="music" :size="13" />
-            <span>Media</span>
-          </button>
-          <button type="button" class="sim-chip" @click="sendTrigger('volume')">
-            <Icons name="wave" :size="13" />
-            <span>Volume</span>
-          </button>
-          <button type="button" class="sim-chip" @click="sendTrigger('notification')">
-            <Icons name="lens" :size="13" />
-            <span>Alert</span>
-          </button>
-          <button type="button" class="sim-chip" @click="sendTrigger('torch')">
-            <Icons name="circle" :size="13" />
-            <span>Torch</span>
-          </button>
-          <button type="button" class="sim-chip" @click="sendTrigger('hyperdl')">
-            <Icons name="download" :size="13" />
-            <span>Download</span>
-          </button>
-          <button type="button" class="sim-chip" @click="sendTrigger('idle')">
-            <Icons name="check" :size="13" />
-            <span>Idle</span>
-          </button>
-        </div>
+        </section>
+      </div>
 
-        <div class="inner-divider"></div>
+      <!-- TAB 2: EVENT INTEGRATIONS -->
+      <div v-else-if="currentTab === 'features'">
+        <div class="section-title">Active listeners</div>
+        <section class="md3-list-group">
+          <!-- Media Session -->
+          <div class="md3-list-row" @click="toggleConfig('enable_media')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="music" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Now playing</div>
+                <div class="row-sub">Track info and media controls</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_media" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
 
-        <div class="btn-group-row">
+          <!-- Charging Telemetry -->
+          <div class="md3-list-row" @click="toggleConfig('enable_charging')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="bolt" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Battery charging</div>
+                <div class="row-sub">Live wattage and power status</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_charging" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Volume Key Expansion -->
+          <div class="md3-list-row" @click="toggleConfig('enable_volume')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="wave" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Volume HUD</div>
+                <div class="row-sub">Level slider on keypress</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_volume" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Ringer Mode -->
+          <div class="md3-list-row" @click="toggleConfig('enable_ringer')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="circle" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Ringer mode</div>
+                <div class="row-sub">Silent and vibrate popups</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_ringer" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Notifications -->
+          <div class="md3-list-row" @click="toggleConfig('enable_notifications')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="lens" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Notifications</div>
+                <div class="row-sub">Heads-up message alerts</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_notifications" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- HyperDL Engine -->
+          <div class="md3-list-row" @click="toggleConfig('enable_hyperdl')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="download" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Downloads</div>
+                <div class="row-sub">HyperDL transfer progress</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_hyperdl" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- HyperCore Governor -->
+          <div class="md3-list-row" @click="toggleConfig('enable_hypercore')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="chip" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">HyperCore sync</div>
+                <div class="row-sub">Kernel profile in expanded card</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_hypercore" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+        </section>
+
+        <div class="section-title">Display behavior</div>
+        <section class="md3-list-group">
+          <!-- Stealth Ring in Idle -->
+          <div class="md3-list-row" @click="toggleConfig('stealth_ring_idle')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="circle" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Stealth idle</div>
+                <div class="row-sub">Hide ring when inactive</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.stealth_ring_idle" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Landscape Guard -->
+          <div class="md3-list-row" @click="toggleConfig('hide_in_landscape')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="shield" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Landscape guard</div>
+                <div class="row-sub">Disable in full-screen games</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.hide_in_landscape" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <!-- TAB 3: MOTION PHYSICS -->
+      <div v-else-if="currentTab === 'motion'">
+        <div class="section-title">Spring curves</div>
+        <section class="md3-card">
+          <div class="preset-row">
+            <span class="row-meta-label">Curve preset</span>
+            <div class="segment-container">
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentMotionProfile === 'fluid' }"
+                @click="applyMotionPreset('fluid')"
+              >
+                HyperOS
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentMotionProfile === 'kinetic' }"
+                @click="applyMotionPreset('kinetic')"
+              >
+                Kinetic
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentMotionProfile === 'snappy' }"
+                @click="applyMotionPreset('snappy')"
+              >
+                Snappy
+              </button>
+            </div>
+          </div>
+
+          <!-- Stiffness -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Stiffness</span>
+              <span class="stepper-val">{{ config.spring_stiffness }}</span>
+            </div>
+            <input
+              type="range"
+              min="200"
+              max="600"
+              step="10"
+              v-model.number="config.spring_stiffness"
+              @input="saveConfigDebounced"
+              class="slider-range"
+            />
+          </div>
+
+          <!-- Damping -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Damping ratio</span>
+              <span class="stepper-val">{{ config.spring_damping }}</span>
+            </div>
+            <input
+              type="range"
+              min="0.50"
+              max="0.95"
+              step="0.02"
+              v-model.number="config.spring_damping"
+              @input="saveConfigDebounced"
+              class="slider-range"
+            />
+          </div>
+        </section>
+
+        <div class="section-title">Expansion options</div>
+        <section class="md3-list-group">
+          <div class="md3-list-row" @click="toggleConfig('auto_expand_charging')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="maximize" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Auto-expand on plug</div>
+                <div class="row-sub">Open power card when charger connects</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.auto_expand_charging" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <!-- TAB 4: TOOLS & DIAGNOSTICS -->
+      <div v-else-if="currentTab === 'tools'">
+        <div class="section-title">Live event triggers</div>
+        <section class="md3-card">
+          <div class="action-chips-grid">
+            <button type="button" class="sim-chip" @click="sendTrigger('charge')">
+              <Icons name="bolt" :size="14" />
+              <span>Charge</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('media')">
+              <Icons name="music" :size="14" />
+              <span>Media</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('volume')">
+              <Icons name="wave" :size="14" />
+              <span>Volume</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('ringer')">
+              <Icons name="circle" :size="14" />
+              <span>Ringer</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('notification')">
+              <Icons name="lens" :size="14" />
+              <span>Alert</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('torch')">
+              <Icons name="circle" :size="14" />
+              <span>Torch</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('hyperdl')">
+              <Icons name="download" :size="14" />
+              <span>Download</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('idle')">
+              <Icons name="check" :size="14" />
+              <span>Idle</span>
+            </button>
+          </div>
+        </section>
+
+        <div class="section-title">Service daemon</div>
+        <section class="md3-card">
           <button type="button" class="action-btn-primary" @click="restartDaemon">
             <Icons name="refresh" :size="15" />
-            <span>Restart Service Daemon</span>
+            <span>Restart service</span>
           </button>
           <button type="button" class="action-btn-secondary" @click="toggleLogView">
             <Icons name="terminal" :size="15" />
-            <span>{{ showLogs ? 'Hide Logs' : 'View Logs' }}</span>
+            <span>{{ showLogs ? 'Hide log output' : 'Inspect log output' }}</span>
           </button>
-        </div>
 
-        <!-- Collapsible Dark Terminal View -->
-        <div v-if="showLogs" class="terminal-container">
-          <div class="terminal-header">
-            <span>/data/adb/modules/hyperring/state/overlay.log</span>
-            <button type="button" class="terminal-refresh-btn" @click="fetchLogs">Refresh</button>
+          <!-- Collapsible Dark Terminal -->
+          <div v-if="showLogs" class="terminal-container">
+            <div class="terminal-header">
+              <span>overlay.log</span>
+              <button type="button" class="terminal-refresh-btn" @click="fetchLogs">Refresh</button>
+            </div>
+            <pre class="terminal-body">{{ logContent || 'No log entries recorded.' }}</pre>
           </div>
-          <pre class="terminal-body">{{ logContent || 'No log entries recorded.' }}</pre>
-        </div>
-      </section>
+        </section>
+      </div>
 
-      <!-- Floating Toast Notification -->
+      <!-- Floating Toast Notice -->
       <transition name="toast-slide">
         <div v-if="toastNotice" class="toast-pill">
           <Icons name="check" :size="14" style="color: var(--primary);" />
@@ -380,8 +508,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import Icons from '@/components/icons/Icons.vue'
+
+const currentTab = ref('cutout')
 
 const config = reactive({
   cutout_x: 540,
@@ -429,6 +559,40 @@ let configDebounceTimer = null
 let statusPollInterval = null
 let toastTimer = null
 
+// Live Simulator Bezel Projections
+const simCutoutLeft = computed(() => {
+  const normX = Math.max(0, Math.min(1080, config.cutout_x))
+  return ((normX / 1080) * 100).toFixed(1)
+})
+
+const simCutoutTop = computed(() => {
+  return Math.max(12, Math.min(48, Math.round(config.cutout_y * 0.45)))
+})
+
+const simCutoutSize = computed(() => {
+  return Math.max(12, Math.min(26, Math.round(config.cutout_radius * 0.45)))
+})
+
+const simPillLeft = computed(() => {
+  const cLeft = parseFloat(simCutoutLeft.value)
+  if (Math.abs(cLeft - 50) < 15) return 50
+  if (cLeft < 35) return Math.max(14, cLeft + 6)
+  return Math.min(86, cLeft - 6)
+})
+
+const simPillTop = computed(() => {
+  return simCutoutTop.value
+})
+
+const simPillWidth = computed(() => {
+  return 92
+})
+
+const simPillHeight = computed(() => {
+  return Math.max(20, Math.round(config.cutout_radius * 0.55))
+})
+
+// Dual-Bridge Shell Runner (Supports KernelSU and APatch/MMRL/Magisk WebRoot)
 function execShell(cmd) {
   return new Promise(resolve => {
     if (typeof ksu !== 'undefined' && typeof ksu.exec === 'function') {
@@ -438,6 +602,12 @@ function execShell(cmd) {
         resolve(stdout || stderr || '')
       }
       try { ksu.exec(cmd, '{}', id) } catch (e) { resolve('') }
+    } else if (typeof exec === 'function') {
+      try {
+        exec(cmd, (errno, stdout, stderr) => {
+          resolve(stdout || stderr || '')
+        })
+      } catch (e) { resolve('') }
     } else {
       resolve('')
     }
@@ -492,11 +662,6 @@ async function saveConfig() {
   await execShell(`mkdir -p /data/adb/modules/hyperring/state && echo '${jsonStr}' > /data/adb/modules/hyperring/state/config.json`)
 }
 
-function stepValue(key, delta) {
-  config[key] = Math.max(0, config[key] + delta)
-  saveConfigDebounced()
-}
-
 function toggleConfig(key) {
   config[key] = !config[key]
   saveConfig()
@@ -518,7 +683,7 @@ function applyPreset(type) {
     config.cutout_radius = 36
   }
   saveConfig()
-  showToast(`Applied ${type} cutout preset`)
+  showToast(`Applied ${type} position`)
 }
 
 async function autoDetectCutout() {
@@ -536,7 +701,7 @@ async function autoDetectCutout() {
     saveConfig()
     showToast(`Detected status bar height: ${sbHeight}px`)
   } catch (e) {
-    showToast('Auto detection failed, using center default')
+    showToast('Auto detection default applied')
   }
 }
 
@@ -553,37 +718,26 @@ function applyMotionPreset(profile) {
     config.spring_damping = 0.92
   }
   saveConfig()
-  showToast(`Applied ${profile} motion preset`)
+  showToast(`Applied ${profile} curve`)
 }
 
 async function sendTrigger(cmd) {
   await execShell(`echo "${cmd}" > /data/adb/modules/hyperring/state/trigger.cmd`)
-  showToast(`Trigger sent: ${cmd}`)
+  showToast(`Sent trigger: ${cmd}`)
   setTimeout(queryStatusFile, 600)
 }
 
 async function triggerCalibration() {
   await sendTrigger('calibrate')
-  showToast('Calibration reticle visible for 6 seconds')
-}
-
-async function toggleDaemon() {
-  if (isDaemonAlive.value) {
-    await execShell('kill -9 $(pgrep -f "com.hyperring.HyperRingOverlay") 2>/dev/null')
-    isDaemonAlive.value = false
-    daemonPid.value = 0
-    showToast('HyperRing daemon stopped')
-  } else {
-    restartDaemon()
-  }
+  showToast('Reticle visible on screen')
 }
 
 async function restartDaemon() {
-  showToast('Restarting HyperRing service...')
+  showToast('Restarting service...')
   await execShell('sh /data/adb/modules/hyperring/action.sh 2>/dev/null')
   setTimeout(async () => {
     await queryStatusFile()
-    showToast(isDaemonAlive.value ? `Active · PID ${daemonPid.value}` : 'Daemon started')
+    showToast(isDaemonAlive.value ? `Active · PID ${daemonPid.value}` : 'Service started')
   }, 1200)
 }
 
@@ -602,7 +756,7 @@ function showToast(msg) {
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(() => {
     if (toastNotice.value === msg) toastNotice.value = ''
-  }, 2400)
+  }, 2200)
 }
 
 onMounted(() => {
@@ -610,11 +764,16 @@ onMounted(() => {
   queryStatusFile()
   statusPollInterval = setInterval(queryStatusFile, 3000)
 
-  // Enforce safe statusbar height fallback if webview does not inject insets
+  // Status bar safe area fallback for KernelSU / APatch / MMRL / WebView
   const cs = getComputedStyle(document.documentElement)
-  const winTop = cs.getPropertyValue('--window-inset-top')
-  if (!winTop || winTop.trim() === '' || winTop.trim() === '0px') {
-    document.documentElement.style.setProperty('--window-inset-top', '38px')
+  const winTop = parseInt(cs.getPropertyValue('--window-inset-top')) || 0
+  if (winTop === 0) {
+    const div = document.createElement('div')
+    div.style.paddingTop = 'env(safe-area-inset-top, 0px)'
+    document.body.appendChild(div)
+    const envTop = parseInt(getComputedStyle(div).paddingTop) || 0
+    document.body.removeChild(div)
+    document.documentElement.style.setProperty('--window-inset-top', `${envTop > 0 ? envTop : 36}px`)
   }
 })
 
@@ -622,335 +781,3 @@ onUnmounted(() => {
   if (statusPollInterval) clearInterval(statusPollInterval)
 })
 </script>
-
-<style scoped>
-.card-hero-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.hero-meta {
-  flex: 1;
-  min-width: 0;
-}
-
-.hero-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--on-surface);
-}
-
-.hero-sub {
-  font-size: 11px;
-  color: var(--on-surface-variant);
-  margin-top: 1px;
-}
-
-.hero-stats-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-  margin-top: 14px;
-}
-
-.hero-stat-box {
-  background: var(--surface-container-low);
-  border: 1px solid var(--surface-container-high);
-  border-radius: 10px;
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.stat-lbl {
-  font-size: 10px;
-  color: var(--on-surface-variant);
-  font-weight: 500;
-}
-
-.stat-val {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--on-surface);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.preset-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.row-meta-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--on-surface);
-}
-
-.segment-container {
-  display: inline-flex;
-  background: var(--surface-container-lowest);
-  padding: 2px;
-  border-radius: 9px;
-  border: 1px solid var(--surface-container-high);
-  gap: 2px;
-}
-
-.segment-btn {
-  padding: 4px 10px;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--on-surface-variant);
-  font-size: 11px;
-  font-weight: 500;
-  border: none;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.segment-btn.active {
-  background: var(--primary-container);
-  color: var(--on-primary-container);
-  font-weight: 600;
-}
-
-.stepper-setting-block {
-  margin-bottom: 14px;
-}
-
-.stepper-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-
-.stepper-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--on-surface);
-}
-
-.stepper-sub {
-  font-size: 11px;
-  color: var(--on-surface-variant);
-  margin-top: 1px;
-}
-
-.stepper-controls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.step-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: var(--surface-container-high);
-  border: 1px solid var(--surface-bright);
-  color: var(--on-surface);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.step-btn:active {
-  background: var(--surface-bright);
-}
-
-.stepper-val {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--primary);
-  min-width: 52px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-.slider-range {
-  width: 100%;
-  accent-color: var(--primary);
-  height: 4px;
-  background: var(--surface-container-highest);
-  border-radius: 2px;
-}
-
-.action-btn-secondary {
-  width: 100%;
-  padding: 9px 14px;
-  border-radius: 11px;
-  background: var(--surface-container-low);
-  border: 1px solid var(--surface-container-high);
-  color: var(--on-surface);
-  font-size: 12px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.action-btn-secondary:active {
-  background: var(--surface-container-highest);
-}
-
-.action-btn-primary {
-  flex: 1;
-  padding: 10px 14px;
-  border-radius: 11px;
-  background: var(--primary);
-  border: none;
-  color: var(--on-primary);
-  font-size: 12px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.action-btn-primary:active {
-  filter: brightness(0.92);
-}
-
-.inner-divider {
-  height: 1px;
-  background: var(--surface-container-high);
-  margin: 14px 0;
-}
-
-.setting-toggle-line {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 0;
-  cursor: pointer;
-}
-
-.sim-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--on-surface-variant);
-  margin-bottom: 8px;
-}
-
-.action-chips-grid {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-}
-
-.sim-chip {
-  padding: 6px 12px;
-  border-radius: 10px;
-  background: var(--surface-container-low);
-  border: 1px solid var(--surface-container-high);
-  color: var(--on-surface);
-  font-size: 11px;
-  font-weight: 500;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.sim-chip:active {
-  background: var(--surface-container-highest);
-}
-
-.btn-group-row {
-  display: flex;
-  gap: 8px;
-}
-
-.terminal-container {
-  margin-top: 12px;
-  background: #000000;
-  border: 1px solid var(--surface-container-high);
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.terminal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 6px 10px;
-  background: var(--surface-container-lowest);
-  border-bottom: 1px solid var(--surface-container-high);
-  font-size: 10px;
-  color: var(--on-surface-variant);
-}
-
-.terminal-refresh-btn {
-  background: transparent;
-  border: none;
-  color: var(--primary);
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.terminal-body {
-  padding: 10px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.4;
-  color: #A3E635;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 140px;
-  overflow-y: auto;
-}
-
-.row-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex: 1;
-}
-
-.row-meta {
-  flex: 1;
-}
-
-.row-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--on-surface);
-}
-
-.row-sub {
-  font-size: 11px;
-  color: var(--on-surface-variant);
-  margin-top: 1px;
-}
-
-.toast-slide-enter-active {
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.22s ease;
-}
-.toast-slide-leave-active {
-  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
-}
-.toast-slide-enter-from {
-  opacity: 0;
-  transform: translate(-50%, 16px) scale(0.92);
-}
-.toast-slide-leave-to {
-  opacity: 0;
-  transform: translate(-50%, -8px) scale(0.96);
-}
-</style>

@@ -15,6 +15,26 @@ case "$1" in
         echo "Sent media trigger"
         exit 0
         ;;
+    volume|test-volume)
+        echo "volume" > "$MODDIR/state/trigger.cmd"
+        echo "Sent volume trigger"
+        exit 0
+        ;;
+    ringer|test-ringer)
+        echo "ringer" > "$MODDIR/state/trigger.cmd"
+        echo "Sent ringer trigger"
+        exit 0
+        ;;
+    notif|notification|test-notif)
+        echo "notification" > "$MODDIR/state/trigger.cmd"
+        echo "Sent notification trigger"
+        exit 0
+        ;;
+    torch|test-torch)
+        echo "torch" > "$MODDIR/state/trigger.cmd"
+        echo "Sent torch trigger"
+        exit 0
+        ;;
     hyperdl|download|test-download)
         echo "hyperdl" > "$MODDIR/state/trigger.cmd"
         echo "Sent hyperdl trigger"
