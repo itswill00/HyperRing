@@ -23,23 +23,26 @@ for arg in "$@"; do
         --deploy|-d|deploy)
             MODE="build_and_deploy"
             ;;
-        --deploy-only)
+        --deploy-only|deploy-only)
             MODE="deploy_only"
             ;;
-        --clean|-c)
-            rm -rf build/classes releases/ webui/dist/
+        --build|-b|build)
+            MODE="build"
+            ;;
+        --clean|-c|clean)
+            rm -rf build/ bin/classes/ releases/ webui/dist/
             echo "Cleaned build artifacts"
             exit 0
             ;;
-        --help|-h)
+        --help|-h|help)
             echo "Usage: ./build.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  (no args)           Build WebUI, compile DEX, and package flashable zip"
-            echo "  -d, --deploy        Build WebUI, compile DEX, and deploy live to device"
+            echo "  (no args) or build  Build WebUI, compile DEX, and package flashable zip"
+            echo "  -d, --deploy, deploy Build WebUI, compile DEX, and deploy live to device"
             echo "  --deploy-only       Deploy existing compiled files directly to device"
-            echo "  -c, --clean         Clean build artifacts and cache"
-            echo "  -h, --help          Show this help text"
+            echo "  -c, --clean, clean  Clean build artifacts and cache"
+            echo "  -h, --help, help    Show this help text"
             exit 0
             ;;
     esac

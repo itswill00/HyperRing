@@ -1,0 +1,7 @@
+bin/classes/
+build/
+node_modules/
+webui/node_modules/
+state/*.tmp*
+state/overlay.log
+state/trigger.cmd

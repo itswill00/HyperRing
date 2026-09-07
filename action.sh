@@ -15,6 +15,16 @@ case "$1" in
         echo "Sent media trigger"
         exit 0
         ;;
+    hyperdl|download|test-download)
+        echo "hyperdl" > "$MODDIR/state/trigger.cmd"
+        echo "Sent hyperdl trigger"
+        exit 0
+        ;;
+    calibrate)
+        echo "calibrate" > "$MODDIR/state/trigger.cmd"
+        echo "Sent calibrate trigger"
+        exit 0
+        ;;
     expand)
         echo "expand" > "$MODDIR/state/trigger.cmd"
         echo "Sent expand trigger"

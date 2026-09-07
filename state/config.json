@@ -4,12 +4,15 @@
   "cutout_radius": 36,
   "enable_media": true,
   "enable_charging": true,
+  "enable_volume": true,
+  "enable_ringer": true,
+  "enable_notifications": true,
   "enable_hyperdl": true,
   "enable_hypercore": true,
-  "spring_stiffness": 360.0,
-  "spring_damping": 0.76,
+  "stealth_ring_idle": false,
+  "hide_in_landscape": true,
+  "spring_stiffness": 380.0,
+  "spring_damping": 0.78,
   "auto_expand_charging": true,
-  "expand_timeout_ms": 3500,
-  "theme": "oled_black",
-  "haptic_feedback": true
+  "expand_timeout_ms": 3500
 }
