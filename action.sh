@@ -1,0 +1,62 @@
+#!/system/bin/sh
+MODDIR="${0%/*}"
+
+mkdir -p "$MODDIR/state"
+chmod 777 "$MODDIR/state"
+
+case "$1" in
+    charge|test-charge)
+        echo "charge" > "$MODDIR/state/trigger.cmd"
+        echo "Sent charge trigger"
+        exit 0
+        ;;
+    media|test-media)
+        echo "media" > "$MODDIR/state/trigger.cmd"
+        echo "Sent media trigger"
+        exit 0
+        ;;
+    expand)
+        echo "expand" > "$MODDIR/state/trigger.cmd"
+        echo "Sent expand trigger"
+        exit 0
+        ;;
+    collapse)
+        echo "collapse" > "$MODDIR/state/trigger.cmd"
+        echo "Sent collapse trigger"
+        exit 0
+        ;;
+    idle)
+        echo "idle" > "$MODDIR/state/trigger.cmd"
+        echo "Sent idle trigger"
+        exit 0
+        ;;
+esac
+
+echo "Restarting HyperRing service..."
+
+cmd appops set --uid 0 SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+cmd appops set --uid 1000 SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+cmd appops set --uid 2000 SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+appops set android SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+appops set com.android.shell SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+pm grant com.android.shell android.permission.SYSTEM_ALERT_WINDOW 2>/dev/null || true
+
+for p in $(pgrep -f "com.hyperring.HyperRingOverlay" 2>/dev/null); do
+    if [ "$p" != "$$" ] && [ "$p" != "$PPID" ]; then
+        kill -9 "$p" 2>/dev/null || true
+    fi
+done
+sleep 0.3
+
+if [ -f "$MODDIR/bin/hyperring.dex" ]; then
+    CLASSPATH="$MODDIR/bin/hyperring.dex" nohup /system/bin/app_process /system/bin com.hyperring.HyperRingOverlay "$MODDIR/state" > "$MODDIR/state/overlay.log" 2>&1 &
+fi
+
+sleep 0.8
+
+for pid in $(pgrep -f "com.hyperring.HyperRingOverlay" 2>/dev/null); do
+    echo -1000 > "/proc/$pid/oom_score_adj" 2>/dev/null || true
+    chmod 000 "/proc/$pid/oom_score_adj" 2>/dev/null || true
+done
+
+echo "HyperRing service active."

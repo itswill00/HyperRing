@@ -1,0 +1,12 @@
+{
+  "active_island": "idle",
+  "expanded": false,
+  "media_title": "",
+  "media_artist": "",
+  "media_playing": false,
+  "battery_pct": 100,
+  "battery_charging": false,
+  "hyperdl_active": false,
+  "hyperdl_speed": "0 MB/s",
+  "hyperdl_progress": 0
+}
