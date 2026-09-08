@@ -123,6 +123,9 @@ public class HyperRingOverlay {
     private static float springStiffness       = 380.0f;
     private static float springDamping         = 0.78f;
     private static boolean autoExpandCharging  = true;
+    private static int lastDisplayRotation     = -1;
+    private static int lastDisplayW            = -1;
+    private static int lastDisplayH            = -1;
     private static boolean autoExpandMedia     = false;
     private static boolean autoExpandNotif     = false;
     private static int expandTimeoutMs         = 3500;
@@ -646,7 +649,8 @@ public class HyperRingOverlay {
                     int max = am != null ? am.getStreamMaxVolume(stream) : 15;
                     volumePercent = Math.round((val / (float) Math.max(1, max)) * 100f);
                     lastVolumeLevel = val;
-                    if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                    previewLock = false;
+                    if (currentIsland != STATE_CALIBRATION) {
                         showIsland(STATE_VOLUME, 1800);
                     }
                 }
@@ -718,45 +722,50 @@ public class HyperRingOverlay {
                 dm.registerDisplayListener(new DisplayManager.DisplayListener() {
                     @Override
                     public void onDisplayAdded(int displayId) {
-                        forceDisplayRebindNow();
                         scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayRemoved(int displayId) {
-                        forceDisplayRebindNow();
                         scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayChanged(int displayId) {
-                        forceDisplayRebindNow();
-                        scheduleRebindRetry();
+                        if (displayId == Display.DEFAULT_DISPLAY) {
+                            if (defaultDisplay != null) {
+                                int curRot = defaultDisplay.getRotation();
+                                DisplayMetrics dm2 = new DisplayMetrics();
+                                defaultDisplay.getRealMetrics(dm2);
+                                if (curRot != lastDisplayRotation || dm2.widthPixels != lastDisplayW || dm2.heightPixels != lastDisplayH) {
+                                    lastDisplayRotation = curRot;
+                                    lastDisplayW = dm2.widthPixels;
+                                    lastDisplayH = dm2.heightPixels;
+                                    scheduleRebindRetry();
+                                }
+                            } else {
+                                scheduleRebindRetry();
+                            }
+                        }
                     }
                 }, handler);
             }
         } catch (Throwable ignored) {}
     }
 
-    private static void forceDisplayRebindNow() {
-        checkDisplayRebind();
-    }
+    private static final Runnable rebindRunnable = new Runnable() {
+        @Override
+        public void run() {
+            checkDisplayRebind();
+        }
+    };
+
 
     private static void scheduleRebindRetry() {
         if (handler == null) return;
-        forceDisplayRebindNow();
-        handler.postDelayed(new Runnable() {
-            @Override public void run() { forceDisplayRebindNow(); }
-        }, 150);
-        handler.postDelayed(new Runnable() {
-            @Override public void run() { forceDisplayRebindNow(); }
-        }, 400);
-        handler.postDelayed(new Runnable() {
-            @Override public void run() { forceDisplayRebindNow(); }
-        }, 800);
-        handler.postDelayed(new Runnable() {
-            @Override public void run() { forceDisplayRebindNow(); }
-        }, 1500);
+        handler.removeCallbacks(rebindRunnable);
+        checkDisplayRebind();
+        handler.postDelayed(rebindRunnable, 250);
     }
 
     private static void checkDisplayRebind() {
@@ -2291,6 +2300,9 @@ public class HyperRingOverlay {
                     }
                 }
 
+                if (state != STATE_CALIBRATION && timeoutMs > 0) {
+                    previewLock = false;
+                }
                 currentIsland = state;
                 activeIslandType = state;
                 isCollapsing = false;
@@ -2352,6 +2364,7 @@ public class HyperRingOverlay {
                     showIsland(STATE_MEDIA, 0);
                     return;
                 }
+                previewLock = false;
                 isCollapsing = true;
                 isExpanded = false;
 
@@ -2708,6 +2721,7 @@ public class HyperRingOverlay {
             } else {
                 currentIsland = STATE_IDLE;
                 activeIslandType = STATE_IDLE;
+                previewLock = false;
             }
 
             // Instantly hide view on idle settlement to avoid any surface transform artifacts
@@ -2820,7 +2834,7 @@ public class HyperRingOverlay {
                     }
 
                     // Auto state transitions (priority-based)
-                    if (!masterEnabled || previewLock || isCollapsing) {
+                    if (!masterEnabled || isCollapsing) {
                         return;
                     }
                     if (currentIsland == STATE_CHARGING && isCharging) {
@@ -2877,7 +2891,8 @@ public class HyperRingOverlay {
                                         volumePercent = Math.round((cur / (float) Math.max(1, max)) * 100f);
                                         lastVolumeLevel = cur;
 
-                                        if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                                        previewLock = false;
+                                        if (currentIsland != STATE_CALIBRATION) {
                                             showIsland(STATE_VOLUME, 2000);
                                         }
                                     }
@@ -3884,6 +3899,7 @@ public class HyperRingOverlay {
                     }
                     expandCard();
                 } else if (cmd.startsWith("collapse")) {
+                    previewLock = false;
                     collapseCard();
                 } else if (cmd.startsWith("idle")) {
                     previewLock = false;
