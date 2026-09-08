@@ -769,8 +769,7 @@ public class HyperRingOverlay {
     private static void scheduleRebindRetry() {
         if (handler == null) return;
         handler.removeCallbacks(rebindRunnable);
-        checkDisplayRebind();
-        handler.postDelayed(rebindRunnable, 250);
+        handler.postDelayed(rebindRunnable, 500);
     }
 
     private static void checkDisplayRebind() {
@@ -861,6 +860,10 @@ public class HyperRingOverlay {
                         ringView.invalidate();
                     }
                     wakeEngineLoop();
+                    // State recovery: if media was playing before screen recorder event, restore island
+                    if (isMediaPlaying && currentIsland == STATE_IDLE && masterEnabled) {
+                        showIsland(STATE_MEDIA, 0);
+                    }
                 } catch (Throwable ignored) {}
             }
         });
