@@ -13,6 +13,9 @@ import android.graphics.RectF;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.RadialGradient;
+import android.graphics.LinearGradient;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.hardware.camera2.CameraManager;
@@ -305,6 +308,11 @@ public class HyperRingOverlay {
     private static RadialGradient cachedGlowGradient = null;
     private static int cachedGlowColor = 0;
     private static float cachedGlowW = -1f;
+    private static Paint paintFadeMask;
+    private static final RectF marqueeBounds = new RectF();
+    private static LinearGradient cachedMarqueeGradient = null;
+    private static float cachedMarqueeLeft = -1f;
+    private static float cachedMarqueeRight = -1f;
 
     // Touch gesture tracking
     private static float touchDownY = 0f;
@@ -562,6 +570,9 @@ public class HyperRingOverlay {
         paintProgress = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintProgress.setStyle(Paint.Style.FILL);
 
+        paintFadeMask = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paintFadeMask.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
+
         tempRectF = new RectF();
     }
 
@@ -681,6 +692,74 @@ public class HyperRingOverlay {
                 }
             }, screenFilter);
         } catch (Throwable ignored) {}
+
+        // DisplayListener for Screen Recording, VirtualDisplay injection & orientation changes
+        try {
+            DisplayManager dm = (DisplayManager) sysContext.getSystemService(Context.DISPLAY_SERVICE);
+            if (dm != null) {
+                dm.registerDisplayListener(new DisplayManager.DisplayListener() {
+                    @Override
+                    public void onDisplayAdded(int displayId) {
+                        checkDisplayRebind();
+                    }
+
+                    @Override
+                    public void onDisplayRemoved(int displayId) {
+                        checkDisplayRebind();
+                    }
+
+                    @Override
+                    public void onDisplayChanged(int displayId) {
+                        if (displayId == Display.DEFAULT_DISPLAY) {
+                            checkDisplayRebind();
+                        }
+                    }
+                }, handler);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void checkDisplayRebind() {
+        if (handler == null) return;
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    DisplayManager dm = (DisplayManager) sysContext.getSystemService(Context.DISPLAY_SERVICE);
+                    if (dm != null) {
+                        Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
+                        if (d != null) {
+                            defaultDisplay = d;
+                            Context dCtx = sysContext.createDisplayContext(defaultDisplay);
+                            if (dCtx != null) context = dCtx;
+                            WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+                            if (wm != null) windowManager = wm;
+                        }
+                    }
+                    resolveDisplayMetrics();
+                    if (ringView != null && windowManager != null) {
+                        boolean attached = ringView.isAttachedToWindow();
+                        if (!attached) {
+                            try {
+                                windowManager.removeViewImmediate(ringView);
+                            } catch (Throwable ignored) {}
+                            try {
+                                if (params != null) {
+                                    windowManager.addView(ringView, params);
+                                }
+                            } catch (Throwable ignored) {}
+                        } else if (params != null) {
+                            try {
+                                windowManager.updateViewLayout(ringView, params);
+                            } catch (Throwable ignored) {}
+                        }
+                    } else if (ringView == null) {
+                        attachWindow();
+                    }
+                    wakeEngineLoop();
+                } catch (Throwable ignored) {}
+            }
+        });
     }
 
     private static void triggerChargingEvent() {
@@ -838,6 +917,15 @@ public class HyperRingOverlay {
         @Override
         public boolean onTouchEvent(MotionEvent event) {
             if (params == null) return false;
+
+            if (event.getAction() == MotionEvent.ACTION_OUTSIDE) {
+                if (isExpanded) {
+                    collapseCard();
+                    return true;
+                }
+                return false;
+            }
+
             float x = event.getX();
             float y = event.getY();
 
@@ -848,13 +936,19 @@ public class HyperRingOverlay {
 
             boolean inside = true;
             if (isExpanded) {
-                float pad = dpToPx(16);
+                float pad = dpToPx(8);
                 inside = (x >= pillRelX - pad && x <= pillRelX + pillW + pad && y >= pillRelY - pad && y <= pillRelY + pillH + pad);
             }
 
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
-                    if (!inside) return false;
+                    if (!inside) {
+                        if (isExpanded) {
+                            collapseCard();
+                            return true;
+                        }
+                        return false;
+                    }
                     touchDownX = x;
                     touchDownY = y;
                     return true;
@@ -959,15 +1053,15 @@ public class HyperRingOverlay {
             float viewH = springH.current;
 
             if (currentIsland == STATE_MEDIA) {
-                float artSize = dpToPx(50);
+                float artSize = dpToPx(48);
                 float holeRelY = (params != null) ? Math.max(0, (cutoutCenterY + yOffset) - params.y) : dpToPx(16);
                 boolean isCutoutCenter = !"left".equalsIgnoreCase(pillAlignment) && !"right".equalsIgnoreCase(pillAlignment);
                 boolean isFloatingBelow = !"cover".equalsIgnoreCase(cardPositionMode) && !notchMode;
-                float baseTopY = isFloatingBelow ? dpToPx(16) : (isCutoutCenter ? Math.max(dpToPx(24), holeRelY + cutoutRadius + dpToPx(6)) : dpToPx(20));
+                float baseTopY = isFloatingBelow ? dpToPx(20) : (isCutoutCenter ? Math.max(dpToPx(24), holeRelY + cutoutRadius + dpToPx(6)) : dpToPx(20));
 
-                float barY = baseTopY + artSize + dpToPx(12);
-                float barLeft = dpToPx(18);
-                float barW = viewW - dpToPx(36);
+                float barY = baseTopY + artSize + dpToPx(14);
+                float barLeft = dpToPx(22);
+                float barW = viewW - dpToPx(44);
 
                 // Interactive Seekbar tap support
                 if (mediaTrackDuration > 0 && Math.abs(y - barY) < dpToPx(14) && x >= barLeft - dpToPx(8) && x <= barLeft + barW + dpToPx(8)) {
@@ -977,7 +1071,7 @@ public class HyperRingOverlay {
                     return;
                 }
 
-                float btnY = viewH - dpToPx(20);
+                float btnY = viewH - dpToPx(22);
                 float centerX = viewW / 2.0f;
                 float prevBtnX = centerX - dpToPx(65);
                 float nextBtnX = centerX + dpToPx(65);
@@ -1295,9 +1389,9 @@ public class HyperRingOverlay {
             canvas.drawText(rightSub, curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (renderType == STATE_MEDIA) {
-            float artSize = dpToPx(50);
-            float artLeft = dpToPx(18);
-            float artTop = baseTopY;
+            float artSize = dpToPx(48);
+            float artLeft = dpToPx(22);
+            float artTop = isFloatingBelow ? dpToPx(20) : Math.max(dpToPx(20), baseTopY);
             float curR = (springR != null) ? springR.current : dpToPx(24);
 
             // 1. Dynamic Ambient Color Glow
@@ -1325,12 +1419,12 @@ public class HyperRingOverlay {
                 }
             }
 
-            // 2. Shared Element Album Art (50dp, 12dp rounded corners)
+            // 2. Shared Element Album Art (48dp, 11dp rounded corners, safe internal padding)
             artRectF.set(artLeft, artTop, artLeft + artSize, artTop + artSize);
             if (currentCardArt != null && !currentCardArt.isRecycled()) {
                 canvas.save();
                 artClipPath.reset();
-                artClipPath.addRoundRect(artRectF, dpToPx(12), dpToPx(12), Path.Direction.CW);
+                artClipPath.addRoundRect(artRectF, dpToPx(11), dpToPx(11), Path.Direction.CW);
                 canvas.clipPath(artClipPath);
                 paintArtBitmap.setAlpha(intAlpha);
                 canvas.drawBitmap(currentCardArt, null, artRectF, paintArtBitmap);
@@ -1339,7 +1433,7 @@ public class HyperRingOverlay {
                 int discColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
                 paintAccentCyan.setColor(discColor);
                 paintAccentCyan.setAlpha(Math.min(255, (int) (alpha * 38)));
-                canvas.drawRoundRect(artRectF, dpToPx(12), dpToPx(12), paintAccentCyan);
+                canvas.drawRoundRect(artRectF, dpToPx(11), dpToPx(11), paintAccentCyan);
 
                 paintAccentCyan.setAlpha(intAlpha);
                 canvas.drawCircle(artLeft + artSize / 2f, artTop + artSize / 2f, dpToPx(10), paintAccentCyan);
@@ -1347,9 +1441,10 @@ public class HyperRingOverlay {
                 canvas.drawCircle(artLeft + artSize / 2f, artTop + artSize / 2f, dpToPx(4), paintOledBlack);
             }
 
-            // 3. Track Title & Artist with Marquee Scrolling
+            // 3. Track Title & Artist with Horizontal Fading Edge Marquee
             float textLeft = artLeft + artSize + dpToPx(14);
-            float maxTextW = curW - textLeft - dpToPx(20);
+            float textRight = curW - dpToPx(22);
+            float maxTextW = textRight - textLeft;
 
             paintTextPrimary.setTextSize(spToPx(14));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
@@ -1362,12 +1457,30 @@ public class HyperRingOverlay {
                 float span = titleW + gap;
                 float offset = (SystemClock.uptimeMillis() / 25f) % span;
 
-                canvas.save();
-                canvas.clipRect(textLeft, artTop, curW - dpToPx(16), artTop + dpToPx(24));
+                marqueeBounds.set(textLeft, artTop, textRight, artTop + dpToPx(24));
+                canvas.saveLayer(marqueeBounds, null);
                 canvas.drawText(mediaTitle, textLeft - offset, artTop + dpToPx(18), paintTextPrimary);
                 if (offset > gap) {
                     canvas.drawText(mediaTitle, textLeft - offset + span, artTop + dpToPx(18), paintTextPrimary);
                 }
+
+                // Horizontal fading edges (16dp length to match HyperOS marquee)
+                float fadeLen = dpToPx(16);
+                float totalW = textRight - textLeft;
+                if (cachedMarqueeGradient == null || Math.abs(cachedMarqueeLeft - textLeft) > 1f || Math.abs(cachedMarqueeRight - textRight) > 1f) {
+                    cachedMarqueeLeft = textLeft;
+                    cachedMarqueeRight = textRight;
+                    float pLeft = Math.min(0.25f, fadeLen / totalW);
+                    float pRight = Math.max(0.75f, 1.0f - (fadeLen / totalW));
+                    cachedMarqueeGradient = new LinearGradient(
+                        textLeft, 0, textRight, 0,
+                        new int[]{0x00FFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00FFFFFF},
+                        new float[]{0.0f, pLeft, pRight, 1.0f},
+                        Shader.TileMode.CLAMP
+                    );
+                    paintFadeMask.setShader(cachedMarqueeGradient);
+                }
+                canvas.drawRect(marqueeBounds, paintFadeMask);
                 canvas.restore();
             } else {
                 canvas.drawText(truncate(mediaTitle, 22), textLeft, artTop + dpToPx(18), paintTextPrimary);
@@ -1379,53 +1492,67 @@ public class HyperRingOverlay {
             paintTextSecondary.setAlpha(Math.min(255, (int) (alpha * 175)));
             canvas.drawText(truncate(mediaArtist.isEmpty() ? "Media Playback" : mediaArtist, 24), textLeft, artTop + dpToPx(36), paintTextSecondary);
 
-            // 4. Interactive Progress Seekbar & Time labels
-            float barY = artTop + artSize + dpToPx(12);
-            float barLeft = dpToPx(18);
-            float barW = curW - dpToPx(36);
-            float barH = dpToPx(3.5f);
+            // Calculate card expansion progress to synchronize seekbar & controls transition timing
+            float compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
+            float targetCardH = getDefaultCardHeight(currentIsland);
+            float expandProgress = Math.max(0.0f, Math.min(1.0f, (curH - compactH) / Math.max(1.0f, targetCardH - compactH)));
 
-            long curPos = mediaTrackPosition;
-            if (isMediaPlaying && mediaPositionUpdateTime > 0) {
-                curPos += (SystemClock.elapsedRealtime() - mediaPositionUpdateTime);
+            // Seekbar alpha starts at 50% expansion progress and reaches full opacity exactly when the card spring settles
+            float seekbarProgress = Math.max(0.0f, Math.min(1.0f, (expandProgress - 0.50f) / 0.50f));
+            float seekbarEase = seekbarProgress * seekbarProgress * (3.0f - 2.0f * seekbarProgress);
+            float seekbarAlpha = alpha * seekbarEase;
+            int seekbarIntAlpha = Math.min(255, Math.max(0, (int) (seekbarAlpha * 255)));
+
+            if (seekbarAlpha > 0.02f) {
+                // 4. Interactive Progress Seekbar & Time labels
+                float barY = artTop + artSize + dpToPx(14);
+                float barLeft = dpToPx(22);
+                float barW = curW - dpToPx(44);
+                float barH = dpToPx(3.5f);
+
+                long curPos = mediaTrackPosition;
+                if (isMediaPlaying && mediaPositionUpdateTime > 0) {
+                    curPos += (SystemClock.elapsedRealtime() - mediaPositionUpdateTime);
+                }
+                if (mediaTrackDuration > 0 && curPos > mediaTrackDuration) curPos = mediaTrackDuration;
+                float progressFraction = (mediaTrackDuration > 0) ? Math.max(0f, Math.min(1f, (float) curPos / (float) mediaTrackDuration)) : 0.42f;
+
+                paintTrack.setAlpha(Math.min(255, (int) (seekbarAlpha * 45)));
+                artRectF.set(barLeft, barY, barLeft + barW, barY + barH);
+                canvas.drawRoundRect(artRectF, barH / 2f, barH / 2f, paintTrack);
+
+                int progColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
+                paintProgress.setColor(progColor);
+                paintProgress.setAlpha(seekbarIntAlpha);
+                artRectF.set(barLeft, barY, barLeft + (barW * progressFraction), barY + barH);
+                canvas.drawRoundRect(artRectF, barH / 2f, barH / 2f, paintProgress);
+                canvas.drawCircle(barLeft + (barW * progressFraction), barY + barH / 2f, dpToPx(4.5f), paintProgress);
+
+                if (mediaTrackDuration > 0) {
+                    paintTextTertiary.setTextSize(spToPx(10));
+                    paintTextTertiary.setTextAlign(Paint.Align.LEFT);
+                    paintTextTertiary.setAlpha(Math.min(255, (int) (seekbarAlpha * 140)));
+                    canvas.drawText(formatTimeMs(curPos), barLeft, barY + dpToPx(13), paintTextTertiary);
+
+                    paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
+                    canvas.drawText("-" + formatTimeMs(Math.max(0, mediaTrackDuration - curPos)), barLeft + barW, barY + dpToPx(13), paintTextTertiary);
+                }
+
+                // 5. Playback Transport Controls
+                float btnY = curH - dpToPx(22);
+                float centerX = curW / 2.0f;
+                float prevBtnX = centerX - dpToPx(65);
+                float nextBtnX = centerX + dpToPx(65);
+
+                paintIconFill.setAlpha(seekbarIntAlpha);
+                drawPrevIcon(canvas, prevBtnX, btnY, dpToPx(13), paintIconFill);
+                if (isMediaPlaying) {
+                    drawPauseIcon(canvas, centerX, btnY, dpToPx(13), paintIconFill);
+                } else {
+                    drawPlayIcon(canvas, centerX, btnY, dpToPx(13), paintIconFill);
+                }
+                drawNextIcon(canvas, nextBtnX, btnY, dpToPx(13), paintIconFill);
             }
-            if (mediaTrackDuration > 0 && curPos > mediaTrackDuration) curPos = mediaTrackDuration;
-            float progressFraction = (mediaTrackDuration > 0) ? Math.max(0f, Math.min(1f, (float) curPos / (float) mediaTrackDuration)) : 0.42f;
-
-            paintTrack.setAlpha(Math.min(255, (int) (alpha * 45)));
-            artRectF.set(barLeft, barY, barLeft + barW, barY + barH);
-            canvas.drawRoundRect(artRectF, barH / 2f, barH / 2f, paintTrack);
-
-            int progColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
-            paintProgress.setColor(progColor);
-            paintProgress.setAlpha(intAlpha);
-            artRectF.set(barLeft, barY, barLeft + (barW * progressFraction), barY + barH);
-            canvas.drawRoundRect(artRectF, barH / 2f, barH / 2f, paintProgress);
-            canvas.drawCircle(barLeft + (barW * progressFraction), barY + barH / 2f, dpToPx(4.5f), paintProgress);
-
-            if (mediaTrackDuration > 0) {
-                paintTextTertiary.setTextSize(spToPx(10));
-                paintTextTertiary.setTextAlign(Paint.Align.LEFT);
-                paintTextTertiary.setAlpha(Math.min(255, (int) (alpha * 140)));
-                canvas.drawText(formatTimeMs(curPos), barLeft, barY + dpToPx(13), paintTextTertiary);
-
-                paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
-                canvas.drawText("-" + formatTimeMs(Math.max(0, mediaTrackDuration - curPos)), barLeft + barW, barY + dpToPx(13), paintTextTertiary);
-            }
-
-            // 5. Playback Transport Controls
-            float btnY = curH - dpToPx(20);
-            float centerX = curW / 2.0f;
-            float prevBtnX = centerX - dpToPx(65);
-            float nextBtnX = centerX + dpToPx(65);
-
-            drawPrevIcon(canvas, prevBtnX, btnY, dpToPx(13), paintIconFill);
-            if (isMediaPlaying) {
-                drawPauseIcon(canvas, centerX, btnY, dpToPx(13), paintIconFill);
-            } else {
-                drawPlayIcon(canvas, centerX, btnY, dpToPx(13), paintIconFill);
-            }
-            drawNextIcon(canvas, nextBtnX, btnY, dpToPx(13), paintIconFill);
 
         } else if (renderType == STATE_VOLUME) {
             float topY = baseTopY;
@@ -2097,7 +2224,7 @@ public class HyperRingOverlay {
     private static int getDefaultCardHeight(int state) {
         if (customCardHeight > 0) return dpToPx(customCardHeight);
         switch (state) {
-            case STATE_MEDIA:    return dpToPx(132);
+            case STATE_MEDIA:    return dpToPx(138);
             case STATE_CHARGING: return dpToPx(116);
             case STATE_VOLUME:   return dpToPx(92);
             default:             return dpToPx(100);
