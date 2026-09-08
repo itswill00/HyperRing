@@ -5,84 +5,64 @@ mkdir -p "$MODDIR/state"
 chmod 777 "$MODDIR/state"
 
 case "$1" in
-    charge|test-charge)
-        echo "charge" > "$MODDIR/state/trigger.cmd"
-        echo "Sent charge trigger"
+    charge*|test-charge*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    media|test-media)
-        echo "media" > "$MODDIR/state/trigger.cmd"
-        echo "Sent media trigger"
+    media*|test-media*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    volume|test-volume)
-        echo "volume" > "$MODDIR/state/trigger.cmd"
-        echo "Sent volume trigger"
+    volume*|test-volume*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    ringer|test-ringer)
-        echo "ringer" > "$MODDIR/state/trigger.cmd"
-        echo "Sent ringer trigger"
+    ringer*|test-ringer*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    notif|notification|test-notif)
-        echo "notification" > "$MODDIR/state/trigger.cmd"
-        echo "Sent notification trigger"
+    notif*|notification*|test-notif*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    torch|test-torch)
-        echo "torch" > "$MODDIR/state/trigger.cmd"
-        echo "Sent torch trigger"
+    torch*|test-torch*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    hyperdl|download|test-download)
-        echo "hyperdl" > "$MODDIR/state/trigger.cmd"
-        echo "Sent hyperdl trigger"
+    hyperdl*|download*|test-download*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    calibrate)
-        echo "calibrate" > "$MODDIR/state/trigger.cmd"
-        echo "Sent calibrate trigger"
+    calibrate*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    calibrate_off|calibrate-off)
-        echo "calibrate_off" > "$MODDIR/state/trigger.cmd"
-        echo "Sent calibrate_off trigger"
+    preview*|test-preview*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    preview-pill|preview:pill)
-        echo "preview:pill" > "$MODDIR/state/trigger.cmd"
-        echo "Sent preview:pill trigger"
+    expand*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    preview-card|preview:card|preview-expanded|preview:expanded)
-        echo "preview:expanded" > "$MODDIR/state/trigger.cmd"
-        echo "Sent preview:expanded trigger"
+    collapse*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
-    preview-reticle|preview:reticle)
-        echo "preview:reticle" > "$MODDIR/state/trigger.cmd"
-        echo "Sent preview:reticle trigger"
-        exit 0
-        ;;
-    preview-off|preview:off)
-        echo "preview:off" > "$MODDIR/state/trigger.cmd"
-        echo "Sent preview:off trigger"
-        exit 0
-        ;;
-    expand)
-        echo "expand" > "$MODDIR/state/trigger.cmd"
-        echo "Sent expand trigger"
-        exit 0
-        ;;
-    collapse)
-        echo "collapse" > "$MODDIR/state/trigger.cmd"
-        echo "Sent collapse trigger"
-        exit 0
-        ;;
-    idle)
-        echo "idle" > "$MODDIR/state/trigger.cmd"
-        echo "Sent idle trigger"
+    idle*)
+        echo "$1" > "$MODDIR/state/trigger.cmd"
+        echo "Sent trigger: $1"
         exit 0
         ;;
 esac

@@ -110,6 +110,8 @@ public class HyperRingOverlay {
     public static final int STATE_CALIBRATION  = 8;
 
     private static volatile int currentIsland = STATE_IDLE;
+    private static volatile int activeIslandType = STATE_IDLE;
+    private static volatile boolean isCollapsing = false;
     private static volatile boolean isExpanded = false;
     private static long expandCollapseTime = 0L;
     private static long calibrationEndTime = 0L;
@@ -213,6 +215,12 @@ public class HyperRingOverlay {
             current += dpos;
             velocity += dvel;
 
+            if (target <= cutoutRadius * 2.0f && current < target) {
+                current = target;
+                velocity = 0f;
+                return false;
+            }
+
             if (Math.abs(velocity) < 0.04f && Math.abs(current - target) < 0.04f) {
                 current = target;
                 velocity = 0f;
@@ -226,9 +234,7 @@ public class HyperRingOverlay {
         }
     }
 
-    // Geometry Springs
-    private static Spring springX;
-    private static Spring springY;
+    // Fluid Geometry Springs (width, height, corner-radius, content alpha)
     private static Spring springW;
     private static Spring springH;
     private static Spring springR;
@@ -319,15 +325,11 @@ public class HyperRingOverlay {
         queryMediaSessionNative();
 
         float initD = cutoutRadius * 2.0f;
-        float initX = cutoutCenterX - cutoutRadius;
-        float initY = cutoutCenterY - cutoutRadius;
 
-        springX = new Spring(initX, springStiffness, springDamping);
-        springY = new Spring(initY, springStiffness, springDamping);
         springW = new Spring(initD, springStiffness, springDamping);
         springH = new Spring(initD, springStiffness, springDamping);
         springR = new Spring(cutoutRadius, springStiffness, springDamping);
-        springContentAlpha = new Spring(0.0f, springStiffness, springDamping);
+        springContentAlpha = new Spring(0.0f, 520f, 1.05f);
 
         initGraphics();
         registerSystemReceivers();
@@ -533,15 +535,7 @@ public class HyperRingOverlay {
                     } else if (!chargingNow) {
                         isCharging = false;
                         if (currentIsland == STATE_CHARGING) {
-                            if (isMediaPlaying && enableMedia) {
-                                currentIsland = STATE_MEDIA;
-                            } else if (isHyperDLActive && enableHyperDL) {
-                                currentIsland = STATE_HYPERDL;
-                            } else {
-                                currentIsland = STATE_IDLE;
-                            }
-                            isExpanded = false;
-                            wakeEngineLoop();
+                            startCollapse();
                         }
                     }
                 }
@@ -561,10 +555,7 @@ public class HyperRingOverlay {
                         AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
                         int max = am != null ? am.getStreamMaxVolume(stream) : 15;
                         volumePercent = Math.round((val / (float) Math.max(1, max)) * 100f);
-                        currentIsland = STATE_VOLUME;
-                        isExpanded = false;
-                        expandCollapseTime = SystemClock.uptimeMillis() + 1800;
-                        wakeEngineLoop();
+                        showIsland(STATE_VOLUME, 1800);
                     }
                 }
             }, volFilter);
@@ -583,10 +574,7 @@ public class HyperRingOverlay {
                         else if (mode == AudioManager.RINGER_MODE_VIBRATE) ringerLabel = "Vibrate";
                         else ringerLabel = "Ring";
 
-                        currentIsland = STATE_RINGER;
-                        isExpanded = false;
-                        expandCollapseTime = SystemClock.uptimeMillis() + 2200;
-                        wakeEngineLoop();
+                        showIsland(STATE_RINGER, 2200);
                     }
                 }
             }, ringerFilter);
@@ -600,13 +588,9 @@ public class HyperRingOverlay {
                     @Override
                     public void onTorchModeChanged(String cameraId, boolean enabled) {
                         if (enabled) {
-                            currentIsland = STATE_TORCH;
-                            isExpanded = false;
-                            expandCollapseTime = SystemClock.uptimeMillis() + 2600;
-                            wakeEngineLoop();
+                            showIsland(STATE_TORCH, 2600);
                         } else if (currentIsland == STATE_TORCH) {
-                            currentIsland = STATE_IDLE;
-                            wakeEngineLoop();
+                            startCollapse();
                         }
                     }
                 }, handler);
@@ -637,15 +621,12 @@ public class HyperRingOverlay {
     }
 
     private static void triggerChargingEvent() {
-        currentIsland = STATE_CHARGING;
         if (autoExpandCharging) {
+            showIsland(STATE_CHARGING, expandTimeoutMs);
             isExpanded = true;
-            expandCollapseTime = SystemClock.uptimeMillis() + expandTimeoutMs;
         } else {
-            isExpanded = false;
-            expandCollapseTime = SystemClock.uptimeMillis() + 4500;
+            showIsland(STATE_CHARGING, 4500);
         }
-        wakeEngineLoop();
     }
 
     private static void initStateFileObserver() {
@@ -702,9 +683,17 @@ public class HyperRingOverlay {
                 PixelFormat.TRANSLUCENT
         );
 
-        params.gravity = Gravity.TOP | Gravity.START;
-        params.x = (cutoutCenterX + xOffset) - cutoutRadius;
-        params.y = (cutoutCenterY + yOffset) - cutoutRadius;
+        if ("left".equalsIgnoreCase(pillAlignment)) {
+            params.gravity = Gravity.TOP | Gravity.START;
+            params.x = Math.round((cutoutCenterX + xOffset) - cutoutRadius);
+        } else if ("right".equalsIgnoreCase(pillAlignment)) {
+            params.gravity = Gravity.TOP | Gravity.END;
+            params.x = Math.round(displayWidthPx - (cutoutCenterX + xOffset + cutoutRadius));
+        } else {
+            params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+            params.x = Math.round(xOffset);
+        }
+        params.y = Math.round((cutoutCenterY + yOffset) - cutoutRadius);
 
         try {
             java.lang.reflect.Field f = WindowManager.LayoutParams.class.getField("LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS");
@@ -722,6 +711,20 @@ public class HyperRingOverlay {
         }
     }
 
+    private static float getPillRelX(float viewW, float pillW) {
+        if ("left".equalsIgnoreCase(pillAlignment)) {
+            return 0f;
+        } else if ("right".equalsIgnoreCase(pillAlignment)) {
+            return Math.max(0f, viewW - pillW);
+        } else {
+            return Math.max(0f, (viewW - pillW) / 2.0f);
+        }
+    }
+
+    private static float getPillRelY(float viewH, float pillH) {
+        return Math.max(0f, (viewH - pillH) / 2.0f);
+    }
+
     static class RingView extends View {
         public RingView(Context context) {
             super(context);
@@ -734,10 +737,10 @@ public class HyperRingOverlay {
             float x = event.getX();
             float y = event.getY();
 
-            float pillRelX = springX.current - params.x;
-            float pillRelY = springY.current - params.y;
             float pillW = springW.current;
             float pillH = springH.current;
+            float pillRelX = getPillRelX(getWidth(), pillW);
+            float pillRelY = getPillRelY(getHeight(), pillH);
 
             boolean insidePill = (x >= pillRelX && x <= pillRelX + pillW && y >= pillRelY && y <= pillRelY + pillH);
 
@@ -781,10 +784,10 @@ public class HyperRingOverlay {
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             if (params == null) return;
-            float pillRelX = springX.current - params.x;
-            float pillRelY = springY.current - params.y;
             float pillW = springW.current;
             float pillH = springH.current;
+            float pillRelX = getPillRelX(getWidth(), pillW);
+            float pillRelY = getPillRelY(getHeight(), pillH);
 
             canvas.save();
             canvas.translate(pillRelX, pillRelY);
@@ -825,8 +828,7 @@ public class HyperRingOverlay {
                 }
             } else if (currentIsland == STATE_TORCH) {
                 isExpanded = false;
-                currentIsland = STATE_IDLE;
-                wakeEngineLoop();
+                startCollapse();
                 return;
             }
             isExpanded = false;
@@ -839,10 +841,8 @@ public class HyperRingOverlay {
 
         // Calibration Reticle Overlay: strictly transparent background so physical camera lens is fully visible
         if (currentIsland == STATE_CALIBRATION) {
-            float effCutoutX = cutoutCenterX + xOffset;
-            float effCutoutY = cutoutCenterY + yOffset;
-            float holeRelX = effCutoutX - springX.current;
-            float holeRelY = effCutoutY - springY.current;
+            float holeRelX = w / 2.0f;
+            float holeRelY = h / 2.0f;
 
             // Reticle circle
             paintCalibRing.setColor(Color.parseColor("#00E5FF"));
@@ -873,12 +873,15 @@ public class HyperRingOverlay {
         // OLED Black Surface
         canvas.drawRoundRect(tempRectF, curR, curR, paintOledBlack);
 
-        // Specular ambient boundary
-        if (currentIsland != STATE_IDLE || isExpanded) {
+        float contentAlpha = springContentAlpha.current;
+
+        // Specular ambient boundary (fades smoothly with content alpha)
+        int borderAlpha = Math.min(60, Math.max(0, (int) (contentAlpha * 60)));
+        if (borderAlpha > 0 && (currentIsland != STATE_IDLE || isExpanded || isCollapsing)) {
+            paintBorder.setAlpha(borderAlpha);
             canvas.drawRoundRect(tempRectF, curR, curR, paintBorder);
         }
 
-        float contentAlpha = springContentAlpha.current;
         if (contentAlpha > 0.04f) {
             canvas.save();
             Path clipP = new Path();
@@ -899,36 +902,33 @@ public class HyperRingOverlay {
         float centerY = curH / 2.0f;
         int intAlpha = Math.min(255, Math.max(0, (int) (alpha * 255)));
 
-        float effCutoutX = cutoutCenterX + xOffset;
-        float holeRelX = effCutoutX - springX.current;
         float holeR = cutoutRadius;
-
         float iconCenterX;
         float textCenterX;
         Paint.Align textAlign;
 
         if ("left".equalsIgnoreCase(pillAlignment)) {
-            iconCenterX = Math.max(dpToPx(16), holeRelX + holeR + dpToPx(14));
+            iconCenterX = Math.max(dpToPx(16), holeR * 2.0f + dpToPx(14));
             textCenterX = curW - dpToPx(18);
             textAlign = Paint.Align.RIGHT;
         } else if ("right".equalsIgnoreCase(pillAlignment)) {
             iconCenterX = dpToPx(18);
-            textCenterX = Math.min(curW - dpToPx(16), holeRelX - holeR - dpToPx(14));
+            textCenterX = Math.min(curW - dpToPx(16), curW - holeR * 2.0f - dpToPx(14));
             textAlign = Paint.Align.RIGHT;
         } else {
-            // center or freeform
-            if (holeRelX > dpToPx(20) && holeRelX < curW - dpToPx(20)) {
-                iconCenterX = Math.max(dpToPx(14), (holeRelX - holeR) / 2.0f);
-                textCenterX = (holeRelX + holeR) + (curW - (holeRelX + holeR)) / 2.0f;
-                textAlign = Paint.Align.CENTER;
-            } else {
-                iconCenterX = dpToPx(20);
-                textCenterX = curW - dpToPx(20);
-                textAlign = Paint.Align.RIGHT;
-            }
+            // center cutout: symmetric wings around curW / 2.0f
+            float leftWingW = (curW / 2.0f) - holeR;
+            float rightWingStart = (curW / 2.0f) + holeR;
+            float rightWingW = curW - rightWingStart;
+
+            iconCenterX = leftWingW / 2.0f;
+            textCenterX = rightWingStart + (rightWingW / 2.0f);
+            textAlign = Paint.Align.CENTER;
         }
 
-        if (currentIsland == STATE_CHARGING) {
+        int renderType = (activeIslandType != STATE_IDLE ? activeIslandType : currentIsland);
+
+        if (renderType == STATE_CHARGING) {
             paintAccentGreen.setAlpha(intAlpha);
             drawBoltIcon(canvas, iconCenterX, centerY, dpToPx(12), paintAccentGreen);
 
@@ -939,7 +939,7 @@ public class HyperRingOverlay {
             canvas.drawText(batteryPct + "%", textCenterX, centerY + dpToPx(4.5f), paintTextPrimary);
             paintTextPrimary.setColor(Color.WHITE);
 
-        } else if (currentIsland == STATE_MEDIA) {
+        } else if (renderType == STATE_MEDIA) {
             paintAccentCyan.setAlpha(intAlpha);
             canvas.drawCircle(iconCenterX, centerY, dpToPx(5), paintAccentCyan);
 
@@ -947,7 +947,7 @@ public class HyperRingOverlay {
             float barsStart = isCutoutCenter ? (textCenterX - dpToPx(10)) : (textCenterX - dpToPx(20));
             renderAudioBars(canvas, barsStart, centerY, alpha);
 
-        } else if (currentIsland == STATE_VOLUME) {
+        } else if (renderType == STATE_VOLUME) {
             paintAccentCyan.setAlpha(intAlpha);
             drawSpeakerIcon(canvas, iconCenterX, centerY, dpToPx(12), volumePercent, paintAccentCyan);
 
@@ -956,7 +956,7 @@ public class HyperRingOverlay {
             paintTextPrimary.setAlpha(intAlpha);
             canvas.drawText(volumePercent + "%", textCenterX, centerY + dpToPx(4), paintTextPrimary);
 
-        } else if (currentIsland == STATE_RINGER) {
+        } else if (renderType == STATE_RINGER) {
             paintAccentAmber.setAlpha(intAlpha);
             drawBellIcon(canvas, iconCenterX, centerY, dpToPx(12), ringerLabel, paintAccentAmber);
 
@@ -965,7 +965,7 @@ public class HyperRingOverlay {
             paintTextPrimary.setAlpha(intAlpha);
             canvas.drawText(ringerLabel, textCenterX, centerY + dpToPx(4), paintTextPrimary);
 
-        } else if (currentIsland == STATE_NOTIFICATION) {
+        } else if (renderType == STATE_NOTIFICATION) {
             paintAccentAmber.setAlpha(intAlpha);
             drawMessageIcon(canvas, iconCenterX, centerY, dpToPx(11), paintAccentAmber);
 
@@ -974,7 +974,7 @@ public class HyperRingOverlay {
             paintTextPrimary.setAlpha(intAlpha);
             canvas.drawText(truncate(notifAppName, 10), textCenterX, centerY + dpToPx(4), paintTextPrimary);
 
-        } else if (currentIsland == STATE_TORCH) {
+        } else if (renderType == STATE_TORCH) {
             paintAccentAmber.setAlpha(intAlpha);
             drawTorchIcon(canvas, iconCenterX, centerY, dpToPx(11), paintAccentAmber);
 
@@ -983,7 +983,7 @@ public class HyperRingOverlay {
             paintTextPrimary.setAlpha(intAlpha);
             canvas.drawText("Torch", textCenterX, centerY + dpToPx(4), paintTextPrimary);
 
-        } else if (currentIsland == STATE_HYPERDL) {
+        } else if (renderType == STATE_HYPERDL) {
             paintAccentCyan.setAlpha(intAlpha);
             drawDownloadIcon(canvas, iconCenterX, centerY, dpToPx(10), paintAccentCyan);
 
@@ -1017,11 +1017,13 @@ public class HyperRingOverlay {
         paintIconFill.setAlpha(intAlpha);
 
         float effCutoutY = cutoutCenterY + yOffset;
-        float holeRelY = effCutoutY - springY.current;
+        float holeRelY = (params != null) ? Math.max(0, effCutoutY - params.y) : dpToPx(16);
         float holeR = cutoutRadius;
         boolean isCutoutCenter = !"left".equalsIgnoreCase(pillAlignment) && !"right".equalsIgnoreCase(pillAlignment);
 
-        if (currentIsland == STATE_CHARGING) {
+        int renderType = (activeIslandType != STATE_IDLE ? activeIslandType : currentIsland);
+
+        if (renderType == STATE_CHARGING) {
             // Elegant Native Layout: Safely clear of camera punch-hole
             float topY;
             if (isCutoutCenter) {
@@ -1068,7 +1070,7 @@ public class HyperRingOverlay {
             String rightSub = (!batteryTempStr.isEmpty() ? batteryTempStr + " · " : "") + hyperCoreProfile;
             canvas.drawText(rightSub, curW - dpToPx(20), bottomY, paintTextTertiary);
 
-        } else if (currentIsland == STATE_MEDIA) {
+        } else if (renderType == STATE_MEDIA) {
             float artSize = dpToPx(48);
             float artLeft = dpToPx(18);
             float artTop = isCutoutCenter ? Math.max(dpToPx(18), holeRelY + holeR + dpToPx(4)) : dpToPx(18);
@@ -1114,7 +1116,7 @@ public class HyperRingOverlay {
             }
             drawNextIcon(canvas, nextBtnX, btnY, dpToPx(13), paintIconFill);
 
-        } else if (currentIsland == STATE_VOLUME) {
+        } else if (renderType == STATE_VOLUME) {
             float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
 
             paintAccentCyan.setAlpha(intAlpha);
@@ -1144,7 +1146,7 @@ public class HyperRingOverlay {
             paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
             canvas.drawText(volumePercent == 0 ? "Muted" : "Active", curW - dpToPx(20), bottomY, paintTextTertiary);
 
-        } else if (currentIsland == STATE_RINGER) {
+        } else if (renderType == STATE_RINGER) {
             float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
 
             paintAccentAmber.setAlpha(intAlpha);
@@ -1167,7 +1169,7 @@ public class HyperRingOverlay {
             else if ("Vibrate".equalsIgnoreCase(ringerLabel)) desc = "Calls and alerts will vibrate";
             canvas.drawText(desc, dpToPx(20), descY, paintTextSecondary);
 
-        } else if (currentIsland == STATE_NOTIFICATION) {
+        } else if (renderType == STATE_NOTIFICATION) {
             float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
 
             paintAccentAmber.setAlpha(intAlpha);
@@ -1192,7 +1194,7 @@ public class HyperRingOverlay {
             String displayContent = (notifContent != null && !notifContent.isEmpty()) ? notifContent : "New message received";
             canvas.drawText(truncate(displayContent, 36), dpToPx(20), contentY, paintTextSecondary);
 
-        } else if (currentIsland == STATE_TORCH) {
+        } else if (renderType == STATE_TORCH) {
             float topY = isCutoutCenter ? Math.max(dpToPx(24), holeRelY + holeR + dpToPx(6)) : dpToPx(24);
 
             paintAccentAmber.setAlpha(intAlpha);
@@ -1212,7 +1214,7 @@ public class HyperRingOverlay {
             paintTextSecondary.setTextAlign(Paint.Align.LEFT);
             canvas.drawText("Rear LED illuminated · Tap to toggle", dpToPx(20), descY, paintTextSecondary);
 
-        } else if (currentIsland == STATE_HYPERDL) {
+        } else if (renderType == STATE_HYPERDL) {
             float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
 
             paintAccentCyan.setAlpha(intAlpha);
@@ -1425,14 +1427,12 @@ public class HyperRingOverlay {
             checkDisplayOrientation();
             resolveTargetState(now);
 
-            boolean sxMoving = springX.update(dt);
-            boolean syMoving = springY.update(dt);
             boolean swMoving = springW.update(dt);
             boolean shMoving = springH.update(dt);
             boolean srMoving = springR.update(dt);
             boolean saMoving = springContentAlpha.update(dt);
 
-            boolean anyMoving = sxMoving || syMoving || swMoving || shMoving || srMoving || saMoving;
+            boolean anyMoving = swMoving || shMoving || srMoving || saMoving;
 
             if (currentIsland == STATE_MEDIA && isMediaPlaying && (now - lastWaveStep > 85)) {
                 stepAudioBars();
@@ -1460,6 +1460,45 @@ public class HyperRingOverlay {
             }
         }
     };
+
+    public static void showIsland(int state, long timeoutMs) {
+        currentIsland = state;
+        activeIslandType = state;
+        isCollapsing = false;
+        isExpanded = false;
+        expandCollapseTime = (timeoutMs > 0) ? (SystemClock.uptimeMillis() + timeoutMs) : 0L;
+
+        if (springW != null) {
+            springW.setParameters(springStiffness, springDamping);
+            springH.setParameters(springStiffness, springDamping);
+            springR.setParameters(springStiffness, springDamping);
+            springContentAlpha.setParameters(springStiffness, springDamping);
+        }
+
+        wakeEngineLoop();
+    }
+
+    public static void startCollapse() {
+        if (isCollapsing) return;
+        isCollapsing = true;
+        expandCollapseTime = 0L;
+
+        float initD = cutoutRadius * 2.0f;
+        if (springW != null) {
+            springW.setTarget(initD);
+            springH.setTarget(initD);
+            springR.setTarget(cutoutRadius);
+            springContentAlpha.setTarget(0.0f);
+
+            // Snappy critically-damped collapse (alpha fades fast ~120ms, pill smoothly shrinks ~200ms)
+            springContentAlpha.setParameters(520f, 1.05f);
+            springW.setParameters(480f, 0.98f);
+            springH.setParameters(480f, 0.98f);
+            springR.setParameters(480f, 0.98f);
+        }
+
+        wakeEngineLoop();
+    }
 
     public static void wakeEngineLoop() {
         if (handler == null) return;
@@ -1495,43 +1534,33 @@ public class HyperRingOverlay {
     private static void resolveTargetState(long now) {
         if (!previewLock) {
             if (currentIsland == STATE_CALIBRATION && now > calibrationEndTime) {
-                currentIsland = STATE_IDLE;
+                startCollapse();
             }
 
             if (expandCollapseTime > 0 && now > expandCollapseTime) {
                 if (isExpanded) {
                     isExpanded = false;
                     expandCollapseTime = now + expandTimeoutMs;
-                } else if (currentIsland == STATE_CHARGING || currentIsland == STATE_VOLUME
-                        || currentIsland == STATE_RINGER || currentIsland == STATE_NOTIFICATION || currentIsland == STATE_TORCH) {
-                    if (isMediaPlaying && enableMedia) {
-                        currentIsland = STATE_MEDIA;
-                    } else if (isHyperDLActive && enableHyperDL) {
-                        currentIsland = STATE_HYPERDL;
-                    } else {
-                        currentIsland = STATE_IDLE;
-                    }
-                    expandCollapseTime = 0L;
+                } else if (!isCollapsing && currentIsland != STATE_IDLE) {
+                    startCollapse();
                 }
             }
         }
 
-        float effCutoutX = cutoutCenterX + xOffset;
-        float effCutoutY = cutoutCenterY + yOffset;
+        if (isCollapsing) {
+            // Target is already locked to cutout circle by startCollapse()
+            return;
+        }
 
         float targetW;
         float targetH;
         float targetR;
-        float targetX;
-        float targetY;
         float targetContentAlpha;
 
         if (currentIsland == STATE_IDLE) {
             targetW = cutoutRadius * 2.0f;
             targetH = cutoutRadius * 2.0f;
             targetR = cutoutRadius;
-            targetX = effCutoutX - cutoutRadius;
-            targetY = effCutoutY - cutoutRadius;
             targetContentAlpha = 0.0f;
 
             if (!stealthRingIdle && springContentAlpha.current < 0.02f && Math.abs(springW.current - targetW) < 1f) {
@@ -1546,8 +1575,6 @@ public class HyperRingOverlay {
             targetW = Math.max(cutoutRadius * 2.4f, dpToPx(72));
             targetH = targetW;
             targetR = targetW / 2.0f;
-            targetX = effCutoutX - (targetW / 2.0f);
-            targetY = effCutoutY - (targetH / 2.0f);
             targetContentAlpha = 1.0f;
 
         } else if (!isExpanded) {
@@ -1559,12 +1586,6 @@ public class HyperRingOverlay {
             int baseH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
             targetH = baseH;
             targetR = targetH / 2.0f;
-
-            if (notchMode) {
-                targetY = Math.max(0, yOffset);
-            } else {
-                targetY = effCutoutY - (targetH / 2.0f);
-            }
             targetContentAlpha = 1.0f;
 
             int defaultW;
@@ -1586,17 +1607,6 @@ public class HyperRingOverlay {
 
             targetW = (customPillWidth > 0) ? dpToPx(customPillWidth) : defaultW;
 
-            if ("left".equalsIgnoreCase(pillAlignment)) {
-                targetX = effCutoutX - (targetH / 2.0f);
-            } else if ("right".equalsIgnoreCase(pillAlignment)) {
-                targetX = effCutoutX + (targetH / 2.0f) - targetW;
-            } else {
-                // center or freeform
-                targetX = effCutoutX - (targetW / 2.0f);
-            }
-
-            targetX = Math.max(dpToPx(4), Math.min(displayWidthPx - targetW - dpToPx(4), targetX));
-
         } else {
             // Expanded card
             if (ringView != null && ringView.getVisibility() != View.VISIBLE) {
@@ -1617,26 +1627,8 @@ public class HyperRingOverlay {
             } else {
                 targetH = dpToPx(96);
             }
-
-            if (notchMode) {
-                targetY = Math.max(0, yOffset);
-            } else {
-                targetY = Math.max(dpToPx(4), Math.min(displayHeightPx - targetH - dpToPx(12), effCutoutY - cutoutRadius - dpToPx(2)));
-            }
-
-            if ("left".equalsIgnoreCase(pillAlignment)) {
-                targetX = Math.max(dpToPx(6), effCutoutX - cutoutRadius - dpToPx(4));
-            } else if ("right".equalsIgnoreCase(pillAlignment)) {
-                targetX = Math.min(displayWidthPx - targetW - dpToPx(6), effCutoutX + cutoutRadius + dpToPx(4) - targetW);
-            } else {
-                targetX = effCutoutX - (targetW / 2.0f);
-            }
-
-            targetX = Math.max(dpToPx(6), Math.min(displayWidthPx - targetW - dpToPx(6), targetX));
         }
 
-        springX.setTarget(targetX);
-        springY.setTarget(targetY);
         springW.setTarget(targetW);
         springH.setTarget(targetH);
         springR.setTarget(targetR);
@@ -1653,7 +1645,7 @@ public class HyperRingOverlay {
         float effCutoutX = cutoutCenterX + xOffset;
         float effCutoutY = cutoutCenterY + yOffset;
 
-        if (currentIsland == STATE_IDLE) {
+        if (currentIsland == STATE_IDLE && !isCollapsing) {
             int targetFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                     | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                     | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
@@ -1661,15 +1653,39 @@ public class HyperRingOverlay {
                     | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
 
             int d = Math.round(cutoutRadius * 2.0f);
-            int x = Math.round(effCutoutX - cutoutRadius);
             int y = Math.round(effCutoutY - cutoutRadius);
 
-            if (params.width != d || params.height != d || params.x != x || params.y != y || params.flags != targetFlags) {
+            boolean changed = false;
+            if (params.width != d || params.height != d || params.y != y || params.flags != targetFlags) {
                 params.width = d;
                 params.height = d;
-                params.x = x;
                 params.y = y;
                 params.flags = targetFlags;
+                changed = true;
+            }
+            if ("left".equalsIgnoreCase(pillAlignment)) {
+                int x = Math.round(effCutoutX - cutoutRadius);
+                if (params.gravity != (Gravity.TOP | Gravity.START) || params.x != x) {
+                    params.gravity = Gravity.TOP | Gravity.START;
+                    params.x = x;
+                    changed = true;
+                }
+            } else if ("right".equalsIgnoreCase(pillAlignment)) {
+                int x = Math.round(displayWidthPx - (effCutoutX + cutoutRadius));
+                if (params.gravity != (Gravity.TOP | Gravity.END) || params.x != x) {
+                    params.gravity = Gravity.TOP | Gravity.END;
+                    params.x = x;
+                    changed = true;
+                }
+            } else {
+                int x = Math.round(xOffset);
+                if (params.gravity != (Gravity.TOP | Gravity.CENTER_HORIZONTAL) || params.x != x) {
+                    params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+                    params.x = x;
+                    changed = true;
+                }
+            }
+            if (changed) {
                 try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
             }
             return;
@@ -1682,13 +1698,11 @@ public class HyperRingOverlay {
 
         int reqW;
         int reqH;
-        int reqX;
         int reqY;
 
         if (currentIsland == STATE_CALIBRATION) {
             reqW = Math.round(Math.max(cutoutRadius * 2.4f, dpToPx(72)));
             reqH = reqW;
-            reqX = Math.round(effCutoutX - (reqW / 2.0f));
             reqY = Math.round(effCutoutY - (reqH / 2.0f));
         } else if (isExpanded) {
             int defaultCardW = (customCardWidth > 0) ? dpToPx(customCardWidth) : dpToPx(320);
@@ -1697,16 +1711,8 @@ public class HyperRingOverlay {
             if (notchMode) {
                 reqY = Math.max(0, yOffset);
             } else {
-                reqY = Math.max(dpToPx(4), Math.round(effCutoutY - cutoutRadius - dpToPx(2)));
+                reqY = Math.max(dpToPx(4), Math.min(displayHeightPx - reqH - dpToPx(12), Math.round(effCutoutY - cutoutRadius - dpToPx(2))));
             }
-            if ("left".equalsIgnoreCase(pillAlignment)) {
-                reqX = Math.round(Math.max(dpToPx(6), effCutoutX - cutoutRadius - dpToPx(4)));
-            } else if ("right".equalsIgnoreCase(pillAlignment)) {
-                reqX = Math.round(Math.min(displayWidthPx - reqW - dpToPx(6), effCutoutX + cutoutRadius + dpToPx(4) - reqW));
-            } else {
-                reqX = Math.round(effCutoutX - (reqW / 2.0f));
-            }
-            reqX = Math.max(dpToPx(6), Math.min(displayWidthPx - reqW - dpToPx(6), reqX));
         } else {
             int defaultW = (currentIsland == STATE_NOTIFICATION) ? dpToPx(150) : dpToPx(142);
             reqW = (customPillWidth > 0) ? dpToPx(customPillWidth) : defaultW;
@@ -1716,34 +1722,48 @@ public class HyperRingOverlay {
             } else {
                 reqY = Math.round(effCutoutY - (reqH / 2.0f));
             }
-            if ("left".equalsIgnoreCase(pillAlignment)) {
-                reqX = Math.round(effCutoutX - (reqH / 2.0f));
-            } else if ("right".equalsIgnoreCase(pillAlignment)) {
-                reqX = Math.round(effCutoutX + (reqH / 2.0f) - reqW);
-            } else {
-                reqX = Math.round(effCutoutX - (reqW / 2.0f));
-            }
-            reqX = Math.max(dpToPx(4), Math.min(displayWidthPx - reqW - dpToPx(4), reqX));
         }
 
-        float curLeft = (springX != null) ? springX.current : params.x;
-        float curTop = (springY != null) ? springY.current : params.y;
-        float curRight = curLeft + ((springW != null) ? springW.current : params.width);
-        float curBottom = curTop + ((springH != null) ? springH.current : params.height);
+        int newW = Math.max(params.width, reqW);
+        int newH = Math.max(params.height, reqH);
 
-        int unionLeft = Math.max(0, (int) Math.floor(Math.min(curLeft, reqX)));
-        int unionTop = Math.max(0, (int) Math.floor(Math.min(curTop, reqY)));
-        int unionRight = Math.min(displayWidthPx, (int) Math.ceil(Math.max(curRight, reqX + reqW)));
-        int unionBottom = Math.min(displayHeightPx, (int) Math.ceil(Math.max(curBottom, reqY + reqH)));
-        int unionW = Math.max(reqW, unionRight - unionLeft);
-        int unionH = Math.max(reqH, unionBottom - unionTop);
-
-        if (params.width != unionW || params.height != unionH || params.x != unionLeft || params.y != unionTop || params.flags != targetFlags) {
-            params.width = unionW;
-            params.height = unionH;
-            params.x = unionLeft;
-            params.y = unionTop;
+        boolean changed = false;
+        if (params.width != newW || params.height != newH || params.y != reqY || params.flags != targetFlags) {
+            params.width = newW;
+            params.height = newH;
+            params.y = reqY;
             params.flags = targetFlags;
+            changed = true;
+        }
+
+        if ("left".equalsIgnoreCase(pillAlignment)) {
+            int x = Math.round(effCutoutX - (reqH / 2.0f));
+            if (params.gravity != (Gravity.TOP | Gravity.START) || params.x != x) {
+                params.gravity = Gravity.TOP | Gravity.START;
+                params.x = x;
+                changed = true;
+            }
+        } else if ("right".equalsIgnoreCase(pillAlignment)) {
+            int x = Math.round(displayWidthPx - (effCutoutX + (reqH / 2.0f)));
+            if (params.gravity != (Gravity.TOP | Gravity.END) || params.x != x) {
+                params.gravity = Gravity.TOP | Gravity.END;
+                params.x = x;
+                changed = true;
+            }
+        } else {
+            int x = Math.round(xOffset);
+            if (params.gravity != (Gravity.TOP | Gravity.CENTER_HORIZONTAL) || params.x != x) {
+                params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+                params.x = x;
+                changed = true;
+            }
+        }
+
+        if (ringView.getVisibility() != View.VISIBLE) {
+            ringView.setVisibility(View.VISIBLE);
+        }
+
+        if (changed) {
             try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
         }
     }
@@ -1755,37 +1775,50 @@ public class HyperRingOverlay {
     private static void onAnimationSettled() {
         if (params == null || windowManager == null || ringView == null) return;
 
-        if (currentIsland == STATE_IDLE) {
+        if (isCollapsing || currentIsland == STATE_IDLE) {
+            isCollapsing = false;
+            if (isMediaPlaying && enableMedia) {
+                showIsland(STATE_MEDIA, 0);
+                return;
+            } else if (isHyperDLActive && enableHyperDL) {
+                showIsland(STATE_HYPERDL, 0);
+                return;
+            } else {
+                currentIsland = STATE_IDLE;
+                activeIslandType = STATE_IDLE;
+            }
+
+            if (!stealthRingIdle) {
+                ringView.setVisibility(View.GONE);
+            }
+
             float effCutoutX = cutoutCenterX + xOffset;
             float effCutoutY = cutoutCenterY + yOffset;
             int d = Math.round(cutoutRadius * 2.0f);
             params.width = d;
             params.height = d;
-            params.x = Math.round(effCutoutX - cutoutRadius);
             params.y = Math.round(effCutoutY - cutoutRadius);
             params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-            try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
 
-            if (!stealthRingIdle) {
-                ringView.setVisibility(View.GONE);
+            if ("left".equalsIgnoreCase(pillAlignment)) {
+                params.gravity = Gravity.TOP | Gravity.START;
+                params.x = Math.round(effCutoutX - cutoutRadius);
+            } else if ("right".equalsIgnoreCase(pillAlignment)) {
+                params.gravity = Gravity.TOP | Gravity.END;
+                params.x = Math.round(displayWidthPx - (effCutoutX + cutoutRadius));
+            } else {
+                params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+                params.x = Math.round(xOffset);
             }
+
+            try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+            persistStatusAsync();
         } else {
             int reqW = Math.round(springW.current);
             int reqH = Math.round(springH.current);
-            int reqX = Math.round(springX.current);
-            int reqY = Math.round(springY.current);
-
-            int targetFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR;
-
-            if (params.width != reqW || params.height != reqH || params.x != reqX || params.y != reqY || params.flags != targetFlags) {
+            if (params.width != reqW || params.height != reqH) {
                 params.width = reqW;
                 params.height = reqH;
-                params.x = reqX;
-                params.y = reqY;
-                params.flags = targetFlags;
                 try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
             }
         }
@@ -1840,7 +1873,7 @@ public class HyperRingOverlay {
                     }
 
                     // Auto state transitions (priority-based)
-                    if (previewLock) {
+                    if (previewLock || isCollapsing) {
                         return;
                     }
                     if (currentIsland == STATE_CHARGING && isCharging) {
@@ -1850,21 +1883,15 @@ public class HyperRingOverlay {
                         // Transient states wait for their timeouts
                     } else if (isHyperDLActive && enableHyperDL) {
                         if (currentIsland != STATE_HYPERDL && currentIsland != STATE_CALIBRATION) {
-                            currentIsland = STATE_HYPERDL;
-                            isExpanded = false;
-                            wakeEngineLoop();
+                            showIsland(STATE_HYPERDL, 0);
                         }
                     } else if (isMediaPlaying && enableMedia) {
                         if (currentIsland != STATE_MEDIA && currentIsland != STATE_CALIBRATION) {
-                            currentIsland = STATE_MEDIA;
-                            isExpanded = false;
-                            wakeEngineLoop();
+                            showIsland(STATE_MEDIA, 0);
                         }
                     } else if (currentIsland != STATE_CHARGING && currentIsland != STATE_CALIBRATION) {
                         if (currentIsland != STATE_IDLE) {
-                            currentIsland = STATE_IDLE;
-                            isExpanded = false;
-                            wakeEngineLoop();
+                            startCollapse();
                         }
                     }
                 } catch (Throwable ignored) {}
@@ -1893,8 +1920,11 @@ public class HyperRingOverlay {
                             if (!checkScreenInteractive()) continue;
 
                             // Volume Event Detection
+                            if (line.contains("Volume controller visible: false")) {
+                                continue;
+                            }
                             if (enableVolume && (line.contains("adjustStreamVolume") 
-                                    || line.contains("Volume controller visible") 
+                                    || line.contains("Volume controller visible: true") 
                                     || line.contains("dispatchVolumeKeyEvent"))) {
                                 AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
                                 if (am != null) {
@@ -1905,10 +1935,7 @@ public class HyperRingOverlay {
                                     lastVolumeLevel = cur;
 
                                     if (!previewLock && currentIsland != STATE_CALIBRATION) {
-                                        currentIsland = STATE_VOLUME;
-                                        isExpanded = false;
-                                        expandCollapseTime = SystemClock.uptimeMillis() + 2000;
-                                        wakeEngineLoop();
+                                        showIsland(STATE_VOLUME, 2000);
                                     }
                                 }
                             }
@@ -1938,10 +1965,7 @@ public class HyperRingOverlay {
                                             notifContent = "New notification";
                                             queryNotificationDetailsAsync(pkg);
                                             if (!previewLock && currentIsland != STATE_CALIBRATION) {
-                                                currentIsland = STATE_NOTIFICATION;
-                                                isExpanded = false;
-                                                expandCollapseTime = SystemClock.uptimeMillis() + 3500;
-                                                wakeEngineLoop();
+                                                showIsland(STATE_NOTIFICATION, 3500);
                                             }
                                         }
                                     }
@@ -2079,21 +2103,12 @@ public class HyperRingOverlay {
             if (active && !isTorchActive) {
                 isTorchActive = true;
                 if (!previewLock && currentIsland != STATE_CALIBRATION) {
-                    currentIsland = STATE_TORCH;
-                    isExpanded = false;
-                    expandCollapseTime = SystemClock.uptimeMillis() + 3000;
-                    wakeEngineLoop();
+                    showIsland(STATE_TORCH, 3000);
                 }
             } else if (!active && isTorchActive) {
                 isTorchActive = false;
                 if (currentIsland == STATE_TORCH) {
-                    if (isMediaPlaying && enableMedia) {
-                        currentIsland = STATE_MEDIA;
-                    } else {
-                        currentIsland = STATE_IDLE;
-                    }
-                    isExpanded = false;
-                    wakeEngineLoop();
+                    startCollapse();
                 }
             }
         } catch (Throwable ignored) {}
@@ -2109,10 +2124,7 @@ public class HyperRingOverlay {
                     int max = am.getStreamMaxVolume(stream);
                     volumePercent = Math.round((cur / (float) Math.max(1, max)) * 100f);
                     if (!previewLock && currentIsland != STATE_CALIBRATION) {
-                        currentIsland = STATE_VOLUME;
-                        isExpanded = false;
-                        expandCollapseTime = SystemClock.uptimeMillis() + 2000;
-                        wakeEngineLoop();
+                        showIsland(STATE_VOLUME, 2000);
                     }
                 }
                 lastVolumeLevel = cur;
@@ -2131,10 +2143,7 @@ public class HyperRingOverlay {
                     else ringerLabel = "Ring";
 
                     if (!previewLock && currentIsland != STATE_CALIBRATION) {
-                        currentIsland = STATE_RINGER;
-                        isExpanded = false;
-                        expandCollapseTime = SystemClock.uptimeMillis() + 2200;
-                        wakeEngineLoop();
+                        showIsland(STATE_RINGER, 2200);
                     }
                 }
                 lastRingerLevel = mode;
@@ -2459,8 +2468,7 @@ public class HyperRingOverlay {
                     isMediaPlaying = true;
                     mediaTitle = "Starboy";
                     mediaArtist = "The Weeknd";
-                    isExpanded = false;
-                    wakeEngineLoop();
+                    showIsland(STATE_MEDIA, 0);
                 } else if (cmd.startsWith("volume")) {
                     String[] parts = cmd.split(":");
                     if (parts.length > 1) {
@@ -2468,10 +2476,7 @@ public class HyperRingOverlay {
                     } else {
                         volumePercent = 75;
                     }
-                    currentIsland = STATE_VOLUME;
-                    isExpanded = false;
-                    expandCollapseTime = SystemClock.uptimeMillis() + 2000;
-                    wakeEngineLoop();
+                    showIsland(STATE_VOLUME, 2000);
                 } else if (cmd.startsWith("ringer")) {
                     String[] parts = cmd.split(":");
                     if (parts.length > 1) {
@@ -2479,10 +2484,7 @@ public class HyperRingOverlay {
                     } else {
                         ringerLabel = "Silent";
                     }
-                    currentIsland = STATE_RINGER;
-                    isExpanded = false;
-                    expandCollapseTime = SystemClock.uptimeMillis() + 2200;
-                    wakeEngineLoop();
+                    showIsland(STATE_RINGER, 2200);
                 } else if (cmd.startsWith("notif") || cmd.startsWith("notification")) {
                     String[] parts = cmd.split(":");
                     if (parts.length > 3) {
@@ -2502,55 +2504,38 @@ public class HyperRingOverlay {
                         notifTitle = "Alex";
                         notifContent = "Build completed successfully";
                     }
-                    currentIsland = STATE_NOTIFICATION;
-                    isExpanded = false;
-                    expandCollapseTime = SystemClock.uptimeMillis() + 3200;
-                    wakeEngineLoop();
+                    showIsland(STATE_NOTIFICATION, 3200);
                 } else if (cmd.startsWith("torch")) {
                     if (currentIsland == STATE_TORCH) {
-                        currentIsland = STATE_IDLE;
+                        startCollapse();
                     } else {
-                        currentIsland = STATE_TORCH;
-                        isExpanded = false;
-                        expandCollapseTime = SystemClock.uptimeMillis() + 2600;
+                        showIsland(STATE_TORCH, 2600);
                     }
-                    wakeEngineLoop();
                 } else if (cmd.startsWith("hyperdl") || cmd.startsWith("download")) {
-                    currentIsland = STATE_HYPERDL;
                     isHyperDLActive = true;
                     hyperDLSpeed = "12.4 MB/s";
                     hyperDLProgress = 68;
-                    isExpanded = false;
-                    wakeEngineLoop();
+                    showIsland(STATE_HYPERDL, 0);
                 } else if (cmd.startsWith("preview:pill") || cmd.startsWith("preview:compact") || "preview-pill".equalsIgnoreCase(cmd)) {
                     previewLock = true;
-                    currentIsland = STATE_CHARGING;
-                    isExpanded = false;
+                    showIsland(STATE_CHARGING, 0);
                     expandCollapseTime = Long.MAX_VALUE;
                     calibrationEndTime = 0L;
-                    wakeEngineLoop();
                 } else if (cmd.startsWith("preview:expanded") || cmd.startsWith("preview:card") || "preview-card".equalsIgnoreCase(cmd)) {
                     previewLock = true;
-                    currentIsland = STATE_MEDIA;
+                    showIsland(STATE_MEDIA, 0);
                     isExpanded = true;
                     expandCollapseTime = Long.MAX_VALUE;
                     calibrationEndTime = 0L;
-                    wakeEngineLoop();
                 } else if (cmd.startsWith("preview:reticle") || "calibrate".equalsIgnoreCase(cmd)) {
                     previewLock = true;
-                    currentIsland = STATE_CALIBRATION;
+                    showIsland(STATE_CALIBRATION, 0);
                     calibrationEndTime = Long.MAX_VALUE;
-                    isExpanded = false;
-                    wakeEngineLoop();
                 } else if (cmd.startsWith("preview:off") || "calibrate_off".equalsIgnoreCase(cmd) || "preview-off".equalsIgnoreCase(cmd)) {
                     previewLock = false;
-                    currentIsland = STATE_IDLE;
-                    isExpanded = false;
-                    expandCollapseTime = 0L;
-                    calibrationEndTime = 0L;
-                    wakeEngineLoop();
+                    startCollapse();
                 } else if ("expand".equalsIgnoreCase(cmd)) {
-                    if (currentIsland == STATE_IDLE) currentIsland = STATE_MEDIA;
+                    if (currentIsland == STATE_IDLE) showIsland(STATE_MEDIA, 0);
                     isExpanded = true;
                     wakeEngineLoop();
                 } else if ("collapse".equalsIgnoreCase(cmd)) {
@@ -2558,11 +2543,7 @@ public class HyperRingOverlay {
                     wakeEngineLoop();
                 } else if ("idle".equalsIgnoreCase(cmd)) {
                     previewLock = false;
-                    currentIsland = STATE_IDLE;
-                    isExpanded = false;
-                    expandCollapseTime = 0L;
-                    calibrationEndTime = 0L;
-                    wakeEngineLoop();
+                    startCollapse();
                 }
                 persistStatusAsync();
             }
@@ -2615,9 +2596,7 @@ public class HyperRingOverlay {
                 calibrationEndTime = SystemClock.uptimeMillis() + 60000;
             }
 
-            if (springX != null) {
-                springX.setParameters(springStiffness, springDamping);
-                springY.setParameters(springStiffness, springDamping);
+            if (springW != null) {
                 springW.setParameters(springStiffness, springDamping);
                 springH.setParameters(springStiffness, springDamping);
                 springR.setParameters(springStiffness, springDamping);
