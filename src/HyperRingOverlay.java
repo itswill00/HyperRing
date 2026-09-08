@@ -718,22 +718,18 @@ public class HyperRingOverlay {
                 dm.registerDisplayListener(new DisplayManager.DisplayListener() {
                     @Override
                     public void onDisplayAdded(int displayId) {
-                        // Ignore non-default virtual display signals during MediaProjection setup
-                        if (displayId != Display.DEFAULT_DISPLAY) return;
                         forceDisplayRebindNow();
                         scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayRemoved(int displayId) {
-                        if (displayId != Display.DEFAULT_DISPLAY) return;
                         forceDisplayRebindNow();
                         scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayChanged(int displayId) {
-                        if (displayId != Display.DEFAULT_DISPLAY) return;
                         forceDisplayRebindNow();
                         scheduleRebindRetry();
                     }
@@ -840,10 +836,12 @@ public class HyperRingOverlay {
                             if (ringView.getVisibility() != View.VISIBLE) {
                                 ringView.setVisibility(View.VISIBLE);
                             }
+                            prepareWindowForTarget();
                         } else if (!isCollapsing) {
                             if (ringView.getVisibility() != View.GONE) {
                                 ringView.setVisibility(View.GONE);
                             }
+                            prepareWindowForTarget();
                         }
                         ringView.requestLayout();
                         ringView.invalidate();
@@ -2835,7 +2833,8 @@ public class HyperRingOverlay {
                             showIsland(STATE_HYPERDL, 0);
                         }
                     } else if (isMediaPlaying && enableMedia) {
-                        if (currentIsland != STATE_MEDIA && currentIsland != STATE_CALIBRATION) {
+                        if ((currentIsland != STATE_MEDIA && currentIsland != STATE_CALIBRATION)
+                                || (currentIsland == STATE_MEDIA && ringView != null && ringView.getVisibility() != View.VISIBLE && (!hideInLandscape || !isLandscape()))) {
                             showIsland(STATE_MEDIA, 0);
                         }
                     } else if (currentIsland != STATE_CHARGING && currentIsland != STATE_CALIBRATION) {
@@ -2899,10 +2898,10 @@ public class HyperRingOverlay {
                                 tuckForHUN(4500);
                             }
 
-                            // Screen recording & VirtualDisplay lifecycle resilience:
-                            // Ignore non-default virtual display invalidation signals during MediaProjection setup.
-                            // The overlay view hierarchy is strictly bound to the default root display context,
-                            // preventing surface detachment during screen recorder initialization.
+                            // Screen recording & VirtualDisplay lifecycle resilience
+                            if (line.contains("screenrecorder") || line.contains("ScreenRecorder") || line.contains("MediaProjection")) {
+                                scheduleRebindRetry();
+                            }
 
                             // Notification Event Detection — only match events log notification_enqueue
                             if (enableNotifications && line.contains("notification_enqueue")) {
