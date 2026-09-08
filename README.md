@@ -1,61 +1,62 @@
 # HyperRing
 
-Physics-driven dynamic punch-hole status pill and interactive overlay for rooted Android devices.
+Physics-driven dynamic punch-hole island for rooted Android devices.
 
-HyperRing transforms the front-facing camera cutout into an expressive, contextual island. Built as a native Android DEX process running under `app_process`, it interacts directly with `WindowManager` without requiring accessibility services or background application overhead.
+HyperRing transforms the front-facing camera cutout into a contextual status island. Written in native Java and executed under Android's `app_process`, it attaches directly to `WindowManager` without requiring accessibility services, companion apps, or background framework bloat.
 
-## Highlights
+## Architecture
 
-- **Natural spring dynamics**: Runge-Kutta 4th-order (RK4) numerical integrator driving 6 independent spatial springs (position, dimension, corner radius, content alpha) at full display refresh rate (up to 120 Hz).
-- **Zero background overhead**: Hardware Choreographer loop automatically halts when animations settle, consuming 0.0% CPU during idle and steady-state display.
-- **Zero-jitter layout**: Window dimensions preallocate target bounding boxes before spring motion initiates, eliminating Android IPC window resizing jumps.
-- **Pure OLED design**: Deep `#000000` surface matching physical display cutouts, subtle specular ambient border, and strictly minimal human typography.
-- **Root-level system listeners**: Native background monitoring for battery telemetry, media sessions, volume steps, ringer mode changes, and notification enqueues.
-- **Stand-alone WebUI**: Single-file Vue 3 configuration interface accessible directly within KernelSU, APatch, and MMRL with dark mode and safe-area inset protection.
+- **RK4 spring physics**: Runge-Kutta 4th-order integrator driving spatial springs (width, height, corner radius, content alpha) at full display refresh rate.
+- **True zero-idle CPU**: Choreographer VSYNC callbacks halt completely when animations settle. During idle and static display, overlay CPU usage sits at 0.0%.
+- **Status-bar safe expanded card**: Expanded cards float neatly below the physical cutout and status bar, keeping system indicators (clock, network, battery) fully visible and unclipped.
+- **Universal hardware auto-detection**: Screen resolution, density, status bar height, and horizontal punch-hole center are probed at runtime. Works out-of-the-box across 720p, 1080p, and 1440p displays.
+- **Integrated WebUI**: Bundled single-file Vue 3 interface running inside KernelSU, APatch, and MMRL with live visual simulator, high-contrast alignment reticle, and instant parameter persistence.
+- **Low-latency root telemetry**: Direct background monitoring of battery state, media sessions, volume steps, ringer profiles, torch state, and incoming notifications.
 
 ## Contextual States
 
-| State | Trigger | Compact Pill | Expanded Card |
+| State | Trigger | Compact Island | Expanded Card |
 | :--- | :--- | :--- | :--- |
-| **Idle** | Screen awake, no active alerts | Stealth ring around camera cutout | None (transparent, touch pass-through) |
-| **Charging** | Power connected | Fast charge indicator and percentage | Battery level, charging power, current, temperature |
-| **Media** | Audio playback active | Disc glyph and animated audio visualizer | Track title, artist, seekbar, playback controls |
-| **Volume** | Hardware volume rocker | Speaker glyph and volume level | Volume slider and current audio stream |
-| **Ringer** | Sound profile change | Sound / vibrate / silent glyph | Active sound mode status |
-| **Notification** | App notification arrival | App icon glyph and sender name | Message preview and dismissal action |
-| **Torch** | Flashlight toggled | Torch glyph and status | Flashlight quick-toggle button |
-| **HyperDL** | Active background download | Progress dot and transfer speed | File transfer name, progress track, transfer rate |
-| **Calibration** | Position tuning | Alignment reticle and target ring | Live coordinate adjustment overlay |
+| **Idle** | Default state | Invisible or subtle cutout ring | Off (touch pass-through) |
+| **Charging** | USB power connected | Battery percent and bolt glyph | Power wattage, charge current, battery level bar |
+| **Media** | Active audio playback | Music note glyph and audio visualizer | Album disc, track title, artist, seekbar, controls |
+| **Volume** | Volume key pressed | Speaker glyph and volume level | Volume slider and audio profile status |
+| **Ringer** | Sound mode toggled | Bell glyph and active profile | Audible status and ring mode description |
+| **Notification** | Message arrived | App glyph and sender label | Sender, message snippet, arrival timestamp |
+| **Torch** | Flashlight activated | Flashlight glyph and status | Flashlight state and toggle reminder |
+| **Calibration** | Tuning mode | Center crosshair and alignment ring | Hardware cutout position alignment |
 
-## Project Structure
+## Repository Layout
 
 ```
 HyperRing/
-├── action.sh             # Magisk/KernelSU action trigger & daemon launcher
-├── service.sh            # Boot completion background service daemon
-├── customize.sh          # Module installation script
-├── uninstall.sh          # Module removal script
-├── module.prop           # Module metadata
-├── build.sh              # Standalone compilation and packaging script
+├── action.sh             # CLI trigger dispatcher & daemon manager
+├── toggle.sh             # Quick on/off toggle shortcut
+├── service.sh            # Boot completion background launcher
+├── customize.sh          # Module installer & hardware prober
+├── uninstall.sh          # Cleanup script
+├── module.prop           # Magisk / KernelSU module metadata
+├── build.sh              # Standalone DEX compiler & WebUI bundler
 ├── src/
-│   └── HyperRingOverlay.java   # Native Java overlay engine & window manager
+│   └── HyperRingOverlay.java  # Native daemon & WindowManager overlay
 ├── state/
-│   ├── config.json       # User cutout coordinates & feature preferences
-│   └── status.json       # Live telemetry and daemon runtime state
+│   ├── config.json       # Island geometry & user preferences
+│   └── status.json       # Live runtime status & telemetry
 ├── webroot/
-│   └── index.html        # Bundled single-file WebUI
-└── webui/                # Vue 3 source code for KernelSU/MMRL WebUI
+│   └── index.html        # Production single-file WebUI
+└── webui/                # Vue 3 source files
 ```
 
 ## Configuration
 
-Settings are stored in `state/config.json`:
+Settings live in `state/config.json` and update dynamically without restarting the daemon:
 
 ```json
 {
+  "enabled": true,
   "cutout_x": 540,
-  "cutout_y": 52,
-  "cutout_radius": 36,
+  "cutout_y": 55,
+  "cutout_radius": 28,
   "pill_alignment": "center",
   "notch_mode": false,
   "x_offset": 0,
@@ -63,7 +64,10 @@ Settings are stored in `state/config.json`:
   "pill_width": 0,
   "pill_height": 0,
   "card_width": 0,
+  "card_height": 0,
   "card_radius": 24,
+  "card_y_offset": 0,
+  "card_position_mode": "below",
   "enable_media": true,
   "enable_charging": true,
   "enable_volume": true,
@@ -83,56 +87,60 @@ Settings are stored in `state/config.json`:
 }
 ```
 
-## CLI Controls
+## Control Commands
 
-HyperRing responds instantly to commands written via `action.sh`:
+HyperRing can be managed directly via shell:
 
 ```bash
-# Persistent live preview modes
+# Toggle daemon state on / off
+su -c "/data/adb/modules/hyperring/toggle.sh"
+# or
+su -c "/data/adb/modules/hyperring/action.sh toggle"
+
+# Explicit service state
+su -c "/data/adb/modules/hyperring/action.sh on"
+su -c "/data/adb/modules/hyperring/action.sh off"
+
+# Live preview locking
 su -c "/data/adb/modules/hyperring/action.sh preview-pill"
 su -c "/data/adb/modules/hyperring/action.sh preview-card"
 su -c "/data/adb/modules/hyperring/action.sh preview-reticle"
 su -c "/data/adb/modules/hyperring/action.sh preview-off"
 
-# Trigger events
+# Manual event triggers
 su -c "/data/adb/modules/hyperring/action.sh charge"
 su -c "/data/adb/modules/hyperring/action.sh media"
 su -c "/data/adb/modules/hyperring/action.sh volume"
 su -c "/data/adb/modules/hyperring/action.sh ringer"
-su -c "/data/adb/modules/hyperring/action.sh notification"
-
-# Toggle expand / collapse
-su -c "/data/adb/modules/hyperring/action.sh expand"
-su -c "/data/adb/modules/hyperring/action.sh collapse"
-
-# Return to idle
-su -c "/data/adb/modules/hyperring/action.sh idle"
+su -c "/data/adb/modules/hyperring/action.sh torch"
 ```
 
-## Building
+## Building from Source
 
-The build system is entirely self-contained. It can compile from source or package existing pre-compiled binaries:
+The build pipeline requires Node.js (for WebUI) and Android SDK / `android.jar` + `d8` (or Termux equivalent):
 
 ```bash
-# Compile DEX, build WebUI, and generate flashable ZIP:
+# Build DEX, bundle WebUI, and generate flashable ZIP:
 ./build.sh
 
-# Compile and deploy live to connected rooted device:
+# Build and immediately deploy to local rooted environment:
 ./build.sh --deploy
 
-# Deploy existing compiled files without rebuilding:
+# Re-deploy existing binaries without rebuilding:
 ./build.sh --deploy-only
 
 # Clean build artifacts:
 ./build.sh --clean
 ```
 
-## Requirements
+Generated flashable archives are placed in `releases/` and copied to `/sdcard/Download/` for straightforward installation via KernelSU or Magisk.
 
-- Android 10+ (API level 29+)
-- Root access via KernelSU, APatch, or Magisk
-- Display with camera punch-hole cutout (center, left, or right aligned)
+## System Requirements
 
-## Author
+- Android 10 or newer (API 29+)
+- Root manager: KernelSU, APatch, or Magisk
+- Display with camera punch-hole cutout (center, left, or right)
 
-Maintained by [@itswill00](https://github.com/itswill00).
+## License
+
+Personal project maintained by [@itswill00](https://github.com/itswill00).
