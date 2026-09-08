@@ -56,15 +56,28 @@ Settings are stored in `state/config.json`:
   "cutout_x": 540,
   "cutout_y": 52,
   "cutout_radius": 36,
+  "pill_alignment": "center",
+  "notch_mode": false,
+  "x_offset": 0,
+  "y_offset": 0,
+  "pill_width": 0,
+  "pill_height": 0,
+  "card_width": 0,
+  "card_radius": 24,
   "enable_media": true,
   "enable_charging": true,
   "enable_volume": true,
+  "enable_ringer": true,
   "enable_notifications": true,
   "enable_hyperdl": true,
   "enable_hypercore": true,
+  "stealth_ring_idle": false,
+  "hide_in_landscape": true,
   "spring_stiffness": 380.0,
   "spring_damping": 0.78,
   "auto_expand_charging": true,
+  "auto_expand_media": false,
+  "auto_expand_notification": false,
   "expand_timeout_ms": 3500
 }
 ```
@@ -74,14 +87,18 @@ Settings are stored in `state/config.json`:
 HyperRing responds instantly to commands written via `action.sh`:
 
 ```bash
-# Trigger charging card
+# Persistent live preview modes
+su -c "/data/adb/modules/hyperring/action.sh preview-pill"
+su -c "/data/adb/modules/hyperring/action.sh preview-card"
+su -c "/data/adb/modules/hyperring/action.sh preview-reticle"
+su -c "/data/adb/modules/hyperring/action.sh preview-off"
+
+# Trigger events
 su -c "/data/adb/modules/hyperring/action.sh charge"
-
-# Trigger media card
 su -c "/data/adb/modules/hyperring/action.sh media"
-
-# Trigger volume pill
 su -c "/data/adb/modules/hyperring/action.sh volume"
+su -c "/data/adb/modules/hyperring/action.sh ringer"
+su -c "/data/adb/modules/hyperring/action.sh notification"
 
 # Toggle expand / collapse
 su -c "/data/adb/modules/hyperring/action.sh expand"

@@ -45,6 +45,31 @@ case "$1" in
         echo "Sent calibrate trigger"
         exit 0
         ;;
+    calibrate_off|calibrate-off)
+        echo "calibrate_off" > "$MODDIR/state/trigger.cmd"
+        echo "Sent calibrate_off trigger"
+        exit 0
+        ;;
+    preview-pill|preview:pill)
+        echo "preview:pill" > "$MODDIR/state/trigger.cmd"
+        echo "Sent preview:pill trigger"
+        exit 0
+        ;;
+    preview-card|preview:card|preview-expanded|preview:expanded)
+        echo "preview:expanded" > "$MODDIR/state/trigger.cmd"
+        echo "Sent preview:expanded trigger"
+        exit 0
+        ;;
+    preview-reticle|preview:reticle)
+        echo "preview:reticle" > "$MODDIR/state/trigger.cmd"
+        echo "Sent preview:reticle trigger"
+        exit 0
+        ;;
+    preview-off|preview:off)
+        echo "preview:off" > "$MODDIR/state/trigger.cmd"
+        echo "Sent preview:off trigger"
+        exit 0
+        ;;
     expand)
         echo "expand" > "$MODDIR/state/trigger.cmd"
         echo "Sent expand trigger"

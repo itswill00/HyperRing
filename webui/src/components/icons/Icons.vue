@@ -121,6 +121,26 @@
       <polygon points="19 20 9 12 19 4 19 20" />
       <line x1="5" y1="19" x2="5" y2="5" />
     </g>
+
+    <g v-else-if="name === 'arrow-up'">
+      <line x1="12" y1="19" x2="12" y2="5" />
+      <polyline points="5 12 12 5 19 12" />
+    </g>
+
+    <g v-else-if="name === 'arrow-down'">
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <polyline points="19 12 12 19 5 12" />
+    </g>
+
+    <g v-else-if="name === 'arrow-left'">
+      <line x1="19" y1="12" x2="5" y2="12" />
+      <polyline points="12 19 5 12 12 5" />
+    </g>
+
+    <g v-else-if="name === 'arrow-right'">
+      <line x1="5" y1="12" x2="19" y2="12" />
+      <polyline points="12 5 19 12 12 19" />
+    </g>
   </svg>
 </template>
 

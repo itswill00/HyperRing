@@ -600,3 +600,152 @@ body, #app {
   opacity: 0;
   transform: translate(-50%, -6px) scale(0.97);
 }
+
+/* Stepper Stepping Controls */
+.stepper-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.step-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--surface-container-highest);
+  color: var(--on-surface);
+  border: 1px solid var(--outline-variant);
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+  transition: all 0.12s ease;
+}
+
+.step-btn:active {
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+  transform: scale(0.92);
+}
+
+.step-btn:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* Directional D-Pad Calibration */
+.dpad-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 14px;
+  background: var(--surface-container-lowest);
+  border-radius: 14px;
+  border: 1px solid var(--surface-container-high);
+  margin-bottom: 12px;
+}
+
+.dpad-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 44px);
+  grid-template-rows: repeat(3, 38px);
+  gap: 6px;
+  align-items: center;
+  justify-items: center;
+  margin: 8px 0;
+}
+
+.dpad-btn {
+  width: 44px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  color: var(--on-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.dpad-btn:active {
+  background: var(--primary);
+  color: var(--on-primary);
+  transform: scale(0.92);
+}
+
+.dpad-center {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--on-surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dpad-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding-top: 8px;
+  border-top: 1px solid var(--surface-container-high);
+}
+
+/* Reticle Banner */
+.reticle-toggle-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  background: var(--surface-container);
+  border-radius: 12px;
+  border: 1px solid var(--surface-container-high);
+  margin-bottom: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.18s ease;
+}
+
+.reticle-toggle-bar.active {
+  background: rgba(0, 229, 255, 0.08);
+  border-color: rgba(0, 229, 255, 0.45);
+}
+
+/* Live Preview Controller Card */
+.preview-bar-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--surface-container);
+  border-radius: 12px;
+  border: 1px solid var(--surface-container-high);
+  margin-bottom: 14px;
+  gap: 8px;
+}
+
+.preview-bar-left {
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-bar-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+
+.preview-bar-sub {
+  font-size: 10px;
+  color: var(--on-surface-variant);
+}
+
+.preview-segments {
+  flex-shrink: 0;
+}
