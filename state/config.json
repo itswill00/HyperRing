@@ -1,7 +1,8 @@
 {
+  "enabled": true,
   "cutout_x": 540,
-  "cutout_y": 52,
-  "cutout_radius": 36,
+  "cutout_y": 55,
+  "cutout_radius": 28,
   "pill_alignment": "center",
   "notch_mode": false,
   "x_offset": 0,

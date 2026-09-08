@@ -19,9 +19,10 @@ fi
 if [ ! -f "$MODPATH/state/config.json" ]; then
     cat > "$MODPATH/state/config.json" << 'C_EOF'
 {
+  "enabled": true,
   "cutout_x": 540,
-  "cutout_y": 52,
-  "cutout_radius": 36,
+  "cutout_y": 55,
+  "cutout_radius": 28,
   "pill_alignment": "center",
   "notch_mode": false,
   "x_offset": 0,
@@ -35,6 +36,7 @@ if [ ! -f "$MODPATH/state/config.json" ]; then
   "enable_volume": true,
   "enable_ringer": true,
   "enable_notifications": true,
+  "enable_torch": true,
   "enable_hyperdl": true,
   "enable_hypercore": true,
   "stealth_ring_idle": false,
@@ -61,7 +63,13 @@ chcon -R u:object_r:system_file:s0 "$MODPATH" 2>/dev/null || true
 cmd appops set --uid 0 SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
 cmd appops set --uid 1000 SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
 cmd appops set --uid 2000 SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+cmd appops set --uid 0 CAMERA allow 2>/dev/null || true
+cmd appops set --uid 1000 CAMERA allow 2>/dev/null || true
+cmd appops set --uid 2000 CAMERA allow 2>/dev/null || true
 appops set android SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
 appops set com.android.shell SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+appops set com.android.shell CAMERA allow 2>/dev/null || true
+pm grant com.android.shell android.permission.SYSTEM_ALERT_WINDOW 2>/dev/null || true
+pm grant com.android.shell android.permission.CAMERA 2>/dev/null || true
 
 ui_print "- HyperRing installation complete."

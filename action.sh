@@ -94,9 +94,19 @@ fi
 
 sleep 0.8
 
+NEW_PID=""
 for pid in $(pgrep -f "com.hyperring.HyperRingOverlay" 2>/dev/null); do
     echo -1000 > "/proc/$pid/oom_score_adj" 2>/dev/null || true
     chmod 000 "/proc/$pid/oom_score_adj" 2>/dev/null || true
+    NEW_PID="$pid"
 done
 
-echo "HyperRing service active."
+if [ -n "$NEW_PID" ]; then
+    echo "HyperRing service active (PID: $NEW_PID)."
+else
+    echo "Error: HyperRing daemon failed to start."
+    if [ -f "$MODDIR/state/overlay.log" ]; then
+        echo "Log output:"
+        tail -n 10 "$MODDIR/state/overlay.log"
+    fi
+fi

@@ -69,6 +69,25 @@
     <!-- Main Scrollable Content -->
     <main class="content-area">
 
+      <!-- Master Island Enable / Disable Card -->
+      <section class="master-toggle-card" :class="{ 'is-disabled': !config.enabled }">
+        <div class="master-toggle-info">
+          <div class="master-toggle-title">
+            <span>Dynamic island</span>
+            <span class="master-status-chip" :class="config.enabled ? 'chip-on' : 'chip-off'">
+              {{ config.enabled ? 'Active' : 'Paused' }}
+            </span>
+          </div>
+          <div class="master-toggle-sub">
+            {{ config.enabled ? 'Overlay is running and responding to events' : 'Overlay and background listeners are paused' }}
+          </div>
+        </div>
+        <label class="md3-switch" @click.stop>
+          <input type="checkbox" v-model="config.enabled" @change="onMasterToggle" />
+          <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+        </label>
+      </section>
+
       <!-- Persistent Live Preview Widget -->
       <section class="preview-bar-card">
         <div class="preview-bar-left">
@@ -887,9 +906,10 @@ const currentTab = ref('placement')
 const dpadStep = ref(1)
 
 const config = reactive({
+  enabled: true,
   cutout_x: 540,
-  cutout_y: 52,
-  cutout_radius: 36,
+  cutout_y: 55,
+  cutout_radius: 28,
   pill_alignment: 'center',
   notch_mode: false,
   x_offset: 0,
@@ -1095,6 +1115,17 @@ async function saveConfig() {
   } catch (e) {}
 }
 
+async function onMasterToggle() {
+  saveConfig()
+  if (!config.enabled) {
+    await sendTrigger('preview:off')
+    await sendTrigger('idle')
+    showToast('Dynamic island paused')
+  } else {
+    showToast('Dynamic island active')
+  }
+}
+
 function toggleConfig(key) {
   config[key] = !config[key]
   saveConfig()
@@ -1161,20 +1192,20 @@ function applyPreset(type) {
   currentPreset.value = type
   if (type === 'center') {
     config.cutout_x = 540
-    config.cutout_y = 52
-    config.cutout_radius = 36
+    config.cutout_y = 55
+    config.cutout_radius = 28
     config.x_offset = 0
     config.y_offset = 0
   } else if (type === 'left') {
     config.cutout_x = 120
-    config.cutout_y = 52
-    config.cutout_radius = 36
+    config.cutout_y = 55
+    config.cutout_radius = 28
     config.x_offset = 0
     config.y_offset = 0
   } else if (type === 'right') {
     config.cutout_x = 960
-    config.cutout_y = 52
-    config.cutout_radius = 36
+    config.cutout_y = 55
+    config.cutout_radius = 28
     config.x_offset = 0
     config.y_offset = 0
   }
@@ -1186,14 +1217,14 @@ async function autoDetectCutout() {
   currentPreset.value = 'auto'
   try {
     const wmOut = await execShell('dumpsys window | grep -i "status_bar" | head -n 10 2>/dev/null')
-    let sbHeight = 104
+    let sbHeight = 110
     if (wmOut && wmOut.includes('fillx')) {
       const match = wmOut.match(/fillx(\d+)/)
       if (match) sbHeight = parseInt(match[1])
     }
     config.cutout_x = 540
     config.cutout_y = Math.round(sbHeight / 2)
-    config.cutout_radius = 36
+    config.cutout_radius = 28
     saveConfig()
     showToast(`Detected status bar height: ${sbHeight}px`)
   } catch (e) {

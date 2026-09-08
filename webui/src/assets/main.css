@@ -749,3 +749,65 @@ body, #app {
 .preview-segments {
   flex-shrink: 0;
 }
+
+/* Master Island Enable / Disable Toggle Card */
+.master-toggle-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 15px;
+  background: var(--surface-container);
+  border-radius: 14px;
+  border: 1px solid var(--surface-container-high);
+  margin-bottom: 12px;
+  transition: all 0.2s ease;
+}
+
+.master-toggle-card.is-disabled {
+  opacity: 0.72;
+}
+
+.master-toggle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+  padding-right: 12px;
+}
+
+.master-toggle-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--on-surface);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.master-toggle-sub {
+  font-size: 11px;
+  color: var(--on-surface-variant);
+  line-height: 1.35;
+}
+
+.master-status-chip {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+
+.master-status-chip.chip-on {
+  background: rgba(163, 217, 165, 0.16);
+  color: #a3d9a5;
+  border: 1px solid rgba(163, 217, 165, 0.35);
+}
+
+.master-status-chip.chip-off {
+  background: rgba(229, 153, 149, 0.16);
+  color: #e59995;
+  border: 1px solid rgba(229, 153, 149, 0.35);
+}

@@ -54,10 +54,14 @@ if [ "$MODE" != "deploy_only" ]; then
     # 1. Compile WebUI if tools are available, otherwise preserve bundled webroot/index.html
     if [ -d "webui" ] && command -v node >/dev/null 2>&1 && [ -f "webui/node_modules/vite/bin/vite.js" ]; then
         echo "Building WebUI bundle..."
-        (cd webui && node ./node_modules/vite/bin/vite.js build >/dev/null 2>&1) || true
+        (cd webui && node ./node_modules/vite/bin/vite.js build)
         if [ -f "webui/dist/index.html" ]; then
             mkdir -p webroot
             cp webui/dist/index.html webroot/index.html
+            echo "WebUI bundled successfully."
+        else
+            echo "Error: WebUI build failed"
+            exit 1
         fi
     elif [ -f "webroot/index.html" ]; then
         echo "Using pre-built WebUI (webroot/index.html)..."
@@ -67,8 +71,8 @@ if [ "$MODE" != "deploy_only" ]; then
     ANDROID_JAR="${ANDROID_JAR:-}"
     if [ -z "$ANDROID_JAR" ] || [ ! -f "$ANDROID_JAR" ]; then
         for candidate in \
-            "./android.jar" \
             "/data/data/com.termux/files/usr/share/java/android.jar" \
+            "./android.jar" \
             "${ANDROID_HOME}/platforms/android-34/android.jar" \
             "${ANDROID_SDK_ROOT}/platforms/android-34/android.jar" \
             "/opt/android-sdk/platforms/android-34/android.jar"; do
@@ -77,10 +81,6 @@ if [ "$MODE" != "deploy_only" ]; then
                 break
             fi
         done
-    fi
-
-    if [ -z "$ANDROID_JAR" ] || [ ! -f "$ANDROID_JAR" ]; then
-        ANDROID_JAR=$(find /data/data/com.termux/files/ -name "android.jar" 2>/dev/null | head -n 1 || true)
     fi
 
     if command -v ecj >/dev/null 2>&1 && command -v dx >/dev/null 2>&1 && [ -n "$ANDROID_JAR" ] && [ -f "$ANDROID_JAR" ]; then
@@ -139,9 +139,13 @@ if [ "$MODE" = "build_and_deploy" ] || [ "$MODE" = "deploy_only" ]; then
         cp $PROJECT_DIR/service.sh $MOD_TARGET/service.sh
         cp $PROJECT_DIR/customize.sh $MOD_TARGET/customize.sh
         cp $PROJECT_DIR/uninstall.sh $MOD_TARGET/uninstall.sh
+        if [ ! -f "$MOD_TARGET/state/config.json" ]; then
+            cp $PROJECT_DIR/state/config.json $MOD_TARGET/state/config.json
+        fi
         chmod 755 $MOD_TARGET/action.sh $MOD_TARGET/service.sh $MOD_TARGET/customize.sh $MOD_TARGET/uninstall.sh
         chmod 644 $MOD_TARGET/bin/hyperring.dex $MOD_TARGET/webroot/index.html $MOD_TARGET/module.prop
         chmod 777 $MOD_TARGET/state
+        chmod 666 $MOD_TARGET/state/config.json 2>/dev/null || true
         chcon -R u:object_r:system_file:s0 $MOD_TARGET
         sh $MOD_TARGET/action.sh
     "
