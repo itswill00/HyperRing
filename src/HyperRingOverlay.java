@@ -681,8 +681,11 @@ public class HyperRingOverlay {
 
         ringView = new RingView(context);
 
-        int type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+        // TYPE_STATUS_BAR_SUB_PANEL = 2017: Layer 17 sits above StatusBar (layer 14)
+        // This ensures touches on the island are delivered to HyperRing rather than stolen by the status bar
+        int type = 2017;
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
@@ -696,6 +699,7 @@ public class HyperRingOverlay {
                 flags,
                 PixelFormat.TRANSLUCENT
         );
+        params.setTitle("HyperRingOverlay");
 
         float effCutoutX = cutoutCenterX + xOffset;
         float effCutoutY = cutoutCenterY + yOffset;
@@ -725,7 +729,14 @@ public class HyperRingOverlay {
             } catch (Throwable ignored) {}
         }
 
-        windowManager.addView(ringView, params);
+        try {
+            windowManager.addView(ringView, params);
+        } catch (Throwable t) {
+            try {
+                params.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+                windowManager.addView(ringView, params);
+            } catch (Throwable ignored) {}
+        }
         if (currentIsland == STATE_IDLE) {
             ringView.setVisibility(View.GONE);
         }
@@ -765,12 +776,15 @@ public class HyperRingOverlay {
             float pillRelX = getPillRelX(getWidth(), pillW);
             float pillRelY = getPillRelY(getHeight(), pillH);
 
-            float pad = dpToPx(12);
-            boolean insidePill = (x >= pillRelX - pad && x <= pillRelX + pillW + pad && y >= pillRelY - pad && y <= pillRelY + pillH + pad);
+            boolean inside = true;
+            if (isExpanded) {
+                float pad = dpToPx(16);
+                inside = (x >= pillRelX - pad && x <= pillRelX + pillW + pad && y >= pillRelY - pad && y <= pillRelY + pillH + pad);
+            }
 
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
-                    if (!insidePill) return false;
+                    if (!inside) return false;
                     touchDownX = x;
                     touchDownY = y;
                     return true;
@@ -869,6 +883,7 @@ public class HyperRingOverlay {
                         return;
                     }
                 }
+                collapseCard();
             } else if (currentIsland == STATE_TORCH) {
                 collapseCard();
                 startCollapse();
@@ -1782,6 +1797,7 @@ public class HyperRingOverlay {
         float effCutoutY = cutoutCenterY + yOffset;
 
         int targetFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
 
