@@ -823,7 +823,20 @@ public class HyperRingOverlay {
                     }
 
                     if (ringView != null) {
-                        if (currentIsland != STATE_IDLE) {
+                        boolean land = hideInLandscape && isLandscape() && currentIsland != STATE_CALIBRATION;
+                        if (land) {
+                            if (ringView.getVisibility() != View.GONE) {
+                                ringView.setVisibility(View.GONE);
+                            }
+                            if (isExpanded) isExpanded = false;
+                            if (params != null && windowManager != null) {
+                                params.width = 1;
+                                params.height = 1;
+                                params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                                try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+                            }
+                            return;
+                        } else if (currentIsland != STATE_IDLE) {
                             if (ringView.getVisibility() != View.VISIBLE) {
                                 ringView.setVisibility(View.VISIBLE);
                             }
@@ -936,8 +949,20 @@ public class HyperRingOverlay {
             pf.setInt(params, curPf | 0x00000040); // PRIVATE_FLAG_NO_MOVE_ANIMATION
         } catch (Throwable ignored) {}
 
-        float effCutoutX = cutoutCenterX + xOffset;
-        float effCutoutY = cutoutCenterY + yOffset;
+        float effCutoutX;
+        float effCutoutY;
+        if (isLandscape()) {
+            int rot = (defaultDisplay != null) ? defaultDisplay.getRotation() : Surface.ROTATION_90;
+            if (rot == Surface.ROTATION_270) {
+                effCutoutX = (displayWidthPx - cutoutCenterY) + xOffset;
+            } else {
+                effCutoutX = cutoutCenterY + xOffset;
+            }
+            effCutoutY = (displayHeightPx / 2.0f) + yOffset;
+        } else {
+            effCutoutX = cutoutCenterX + xOffset;
+            effCutoutY = cutoutCenterY + yOffset;
+        }
         if (effCutoutX <= 0 && displayWidthPx > 0) {
             effCutoutX = displayWidthPx / 2.0f;
         }
@@ -1005,6 +1030,7 @@ public class HyperRingOverlay {
     static class RingView extends View {
         public RingView(Context context) {
             super(context);
+            setBackgroundColor(Color.TRANSPARENT);
             setClickable(true);
             setOutlineProvider(new ViewOutlineProvider() {
                 @Override
@@ -1097,6 +1123,10 @@ public class HyperRingOverlay {
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             if (params == null) return;
+            if (hideInLandscape && isLandscape() && currentIsland != STATE_CALIBRATION) {
+                return;
+            }
+            canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
             invalidateOutline();
             float pillW = springW.current;
             float pillH = springH.current;
@@ -2044,6 +2074,12 @@ public class HyperRingOverlay {
                 return;
             }
 
+            if (hideInLandscape && isLandscape() && currentIsland != STATE_CALIBRATION) {
+                checkDisplayOrientation();
+                isLoopRunning = false;
+                return;
+            }
+
             float dt = (frameTimeNanos - lastFrameNanos) * 1e-9f;
             lastFrameNanos = frameTimeNanos;
             if (dt <= 0f || dt > 0.04f) dt = 0.016f;
@@ -2378,10 +2414,18 @@ public class HyperRingOverlay {
 
     private static void checkDisplayOrientation() {
         if (defaultDisplay == null || ringView == null) return;
-        if (hideInLandscape && isLandscape()) {
+        if (hideInLandscape && isLandscape() && currentIsland != STATE_CALIBRATION) {
             if (ringView.getVisibility() != View.GONE) {
                 ringView.setVisibility(View.GONE);
                 if (isExpanded) isExpanded = false;
+            }
+            if (params != null && windowManager != null) {
+                if (params.width > 1 || params.height > 1 || (params.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0) {
+                    params.width = 1;
+                    params.height = 1;
+                    params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                    try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+                }
             }
         }
     }
@@ -2485,21 +2529,42 @@ public class HyperRingOverlay {
     private static void prepareWindowForTarget() {
         if (params == null || windowManager == null || ringView == null) return;
 
-        if (hideInLandscape && isLandscape() && currentIsland != STATE_CALIBRATION) {
-            if (ringView.getVisibility() != View.GONE) {
-                ringView.setVisibility(View.GONE);
+        float effCutoutX;
+        float effCutoutY;
+        if (isLandscape()) {
+            int rot = (defaultDisplay != null) ? defaultDisplay.getRotation() : Surface.ROTATION_90;
+            if (rot == Surface.ROTATION_270) {
+                effCutoutX = (displayWidthPx - cutoutCenterY) + xOffset;
+            } else {
+                effCutoutX = cutoutCenterY + xOffset;
             }
-            return;
+            effCutoutY = (displayHeightPx / 2.0f) + yOffset;
+        } else {
+            effCutoutX = cutoutCenterX + xOffset;
+            effCutoutY = cutoutCenterY + yOffset;
         }
-
-        float effCutoutX = cutoutCenterX + xOffset;
-        float effCutoutY = cutoutCenterY + yOffset;
         if (effCutoutX <= 0 && displayWidthPx > 0) {
             effCutoutX = displayWidthPx / 2.0f;
         }
 
         int compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
         int topAnchorY = notchMode ? Math.max(0, yOffset) : Math.round(effCutoutY - (compactH / 2.0f));
+
+        if (hideInLandscape && isLandscape() && currentIsland != STATE_CALIBRATION) {
+            if (ringView.getVisibility() != View.GONE) {
+                ringView.setVisibility(View.GONE);
+            }
+            if (isExpanded) isExpanded = false;
+            params.width = 1;
+            params.height = 1;
+            params.x = Math.round(effCutoutX - 0.5f);
+            params.y = topAnchorY;
+            params.gravity = Gravity.TOP | Gravity.START;
+            params.windowAnimations = 0;
+            params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+            return;
+        }
 
         if (isHUNTucked && currentIsland != STATE_CALIBRATION) {
             if (ringView.getVisibility() != View.GONE) {
@@ -2733,14 +2798,15 @@ public class HyperRingOverlay {
                     // Landscape guard check
                     if (hideInLandscape && currentIsland != STATE_CALIBRATION) {
                         boolean land = isLandscape();
-                        if (land && ringView != null && ringView.getVisibility() == View.VISIBLE) {
-                            handler.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    if (ringView != null) ringView.setVisibility(View.GONE);
-                                    if (isExpanded) isExpanded = false;
-                                }
-                            });
+                        if (land) {
+                            if (ringView != null && (ringView.getVisibility() == View.VISIBLE || (params != null && params.width > 1))) {
+                                handler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        prepareWindowForTarget();
+                                    }
+                                });
+                            }
                             return;
                         } else if (!land && ringView != null && ringView.getVisibility() != View.VISIBLE && currentIsland != STATE_IDLE && masterEnabled) {
                             handler.post(new Runnable() {
