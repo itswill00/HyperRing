@@ -782,6 +782,12 @@ public class HyperRingOverlay {
                             try {
                                 if (ringView.getParent() == null && params != null) {
                                     params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+                                    params.windowAnimations = 0;
+                                    try {
+                                        java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
+                                        int curPf = pf.getInt(params);
+                                        pf.setInt(params, curPf | 0x00000040); // PRIVATE_FLAG_NO_MOVE_ANIMATION
+                                    } catch (Throwable ignored2) {}
                                     windowManager.addView(ringView, params);
                                     readded = true;
                                 }
@@ -792,6 +798,12 @@ public class HyperRingOverlay {
                             }
                         } else if (params != null) {
                             params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+                            params.windowAnimations = 0;
+                            try {
+                                java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
+                                int curPf = pf.getInt(params);
+                                pf.setInt(params, curPf | 0x00000040); // PRIVATE_FLAG_NO_MOVE_ANIMATION
+                            } catch (Throwable ignored2) {}
                             try {
                                 windowManager.updateViewLayout(ringView, params);
                             } catch (Throwable ignored) {}
@@ -898,24 +910,30 @@ public class HyperRingOverlay {
                 PixelFormat.TRANSLUCENT
         );
         params.setTitle("HyperRingOverlay");
+        params.windowAnimations = 0;
+        try {
+            java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
+            int curPf = pf.getInt(params);
+            pf.setInt(params, curPf | 0x00000040); // PRIVATE_FLAG_NO_MOVE_ANIMATION
+        } catch (Throwable ignored) {}
 
         float effCutoutX = cutoutCenterX + xOffset;
         float effCutoutY = cutoutCenterY + yOffset;
+        if (effCutoutX <= 0 && displayWidthPx > 0) {
+            effCutoutX = displayWidthPx / 2.0f;
+        }
         int compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
         int topAnchorY = notchMode ? Math.max(0, yOffset) : Math.round(effCutoutY - (compactH / 2.0f));
 
+        params.gravity = Gravity.TOP | Gravity.START;
         if ("left".equalsIgnoreCase(pillAlignment)) {
-            params.gravity = Gravity.TOP | Gravity.START;
-            params.x = Math.round(effCutoutX - cutoutRadius);
+            params.x = Math.round(effCutoutX - (initDiameter / 2.0f));
         } else if ("right".equalsIgnoreCase(pillAlignment)) {
-            params.gravity = Gravity.TOP | Gravity.END;
-            params.x = Math.round(displayWidthPx - (effCutoutX + cutoutRadius));
+            params.x = Math.round(displayWidthPx - (effCutoutX + (initDiameter / 2.0f)));
         } else if ("freeform".equalsIgnoreCase(pillAlignment)) {
-            params.gravity = Gravity.TOP | Gravity.START;
-            params.x = Math.round(effCutoutX - cutoutRadius);
+            params.x = Math.round(effCutoutX - (initDiameter / 2.0f));
         } else {
-            params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-            params.x = Math.round(effCutoutX - (displayWidthPx / 2.0f));
+            params.x = Math.round(effCutoutX - (initDiameter / 2.0f));
         }
         params.y = topAnchorY;
 
@@ -2373,6 +2391,9 @@ public class HyperRingOverlay {
 
         float effCutoutX = cutoutCenterX + xOffset;
         float effCutoutY = cutoutCenterY + yOffset;
+        if (effCutoutX <= 0 && displayWidthPx > 0) {
+            effCutoutX = displayWidthPx / 2.0f;
+        }
 
         int compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
         int topAnchorY = notchMode ? Math.max(0, yOffset) : Math.round(effCutoutY - (compactH / 2.0f));
@@ -2383,6 +2404,10 @@ public class HyperRingOverlay {
             }
             params.width = 1;
             params.height = 1;
+            params.x = Math.round(effCutoutX - 0.5f);
+            params.y = topAnchorY;
+            params.gravity = Gravity.TOP | Gravity.START;
+            params.windowAnimations = 0;
             params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
             try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
             return;
@@ -2402,6 +2427,10 @@ public class HyperRingOverlay {
             }
             params.width = 1;
             params.height = 1;
+            params.x = Math.round(effCutoutX - 0.5f);
+            params.y = topAnchorY;
+            params.gravity = Gravity.TOP | Gravity.START;
+            params.windowAnimations = 0;
             params.flags = targetFlags;
             try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
             return;
@@ -2433,6 +2462,27 @@ public class HyperRingOverlay {
         int newW = reqW;
         int newH = reqH;
 
+        int targetGravity = Gravity.TOP | Gravity.START;
+        int targetX;
+        if ("left".equalsIgnoreCase(pillAlignment)) {
+            targetX = Math.round(effCutoutX - (newW / 2.0f));
+        } else if ("right".equalsIgnoreCase(pillAlignment)) {
+            targetX = Math.round(displayWidthPx - (effCutoutX + (newW / 2.0f)));
+        } else if ("freeform".equalsIgnoreCase(pillAlignment)) {
+            targetX = Math.round(effCutoutX - (newW / 2.0f));
+        } else {
+            // Strictly clamped to physical camera cutout center: effCutoutX - half-width
+            targetX = Math.round(effCutoutX - (newW / 2.0f));
+        }
+
+        // Under no circumstances should targetX reset to 0 or re-evaluate empty
+        if (targetX <= 0 && effCutoutX > 0 && displayWidthPx > newW) {
+            targetX = Math.max(0, Math.round(effCutoutX - (newW / 2.0f)));
+        }
+        if (displayWidthPx > newW) {
+            targetX = Math.max(0, Math.min(displayWidthPx - newW, targetX));
+        }
+
         boolean changed = false;
         if (params.width != newW || params.height != newH || params.y != reqY || params.flags != targetFlags) {
             params.width = newW;
@@ -2442,27 +2492,24 @@ public class HyperRingOverlay {
             changed = true;
         }
 
-        int targetGravity;
-        int targetX;
-        if ("left".equalsIgnoreCase(pillAlignment)) {
-            targetGravity = Gravity.TOP | Gravity.START;
-            targetX = Math.round(effCutoutX - (newW / 2.0f));
-        } else if ("right".equalsIgnoreCase(pillAlignment)) {
-            targetGravity = Gravity.TOP | Gravity.END;
-            targetX = Math.round(displayWidthPx - (effCutoutX + (newW / 2.0f)));
-        } else if ("freeform".equalsIgnoreCase(pillAlignment)) {
-            targetGravity = Gravity.TOP | Gravity.START;
-            targetX = Math.round(effCutoutX - (newW / 2.0f));
-        } else {
-            targetGravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-            targetX = Math.round(effCutoutX - (displayWidthPx / 2.0f));
-        }
-
         if (params.gravity != targetGravity || params.x != targetX) {
             params.gravity = targetGravity;
             params.x = targetX;
             changed = true;
         }
+
+        if (params.windowAnimations != 0) {
+            params.windowAnimations = 0;
+            changed = true;
+        }
+        try {
+            java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
+            int curPf = pf.getInt(params);
+            if ((curPf & 0x00000040) == 0) {
+                pf.setInt(params, curPf | 0x00000040); // PRIVATE_FLAG_NO_MOVE_ANIMATION
+                changed = true;
+            }
+        } catch (Throwable ignored) {}
 
         if (ringView.getVisibility() != View.VISIBLE) {
             ringView.setVisibility(View.VISIBLE);
@@ -2501,6 +2548,10 @@ public class HyperRingOverlay {
             ringView.setVisibility(View.GONE);
             params.width = 1;
             params.height = 1;
+            float effCutoutX = cutoutCenterX + xOffset;
+            params.x = Math.round(effCutoutX - 0.5f);
+            params.gravity = Gravity.TOP | Gravity.START;
+            params.windowAnimations = 0;
             params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
             try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
             persistStatusAsync();
@@ -2514,6 +2565,10 @@ public class HyperRingOverlay {
                 if (params.width != reqW || params.height != reqH) {
                     params.width = reqW;
                     params.height = reqH;
+                    float effCutoutX = cutoutCenterX + xOffset;
+                    params.x = Math.round(effCutoutX - (reqW / 2.0f));
+                    params.gravity = Gravity.TOP | Gravity.START;
+                    params.windowAnimations = 0;
                     try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
                 }
             }
