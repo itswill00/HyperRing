@@ -992,9 +992,9 @@ const simCutoutSize = computed(() => {
 
 const simPillLeft = computed(() => {
   const cLeft = parseFloat(simCutoutLeft.value)
-  if (Math.abs(cLeft - 50) < 15) return 50
-  if (cLeft < 35) return Math.max(14, cLeft + 6)
-  return Math.min(86, cLeft - 6)
+  if (config.pill_alignment === 'left') return 18
+  if (config.pill_alignment === 'right') return 82
+  return cLeft
 })
 
 const simPillTop = computed(() => simCutoutTop.value)
@@ -1084,12 +1084,15 @@ async function queryStatusFile() {
 
 function saveConfigDebounced() {
   clearTimeout(configDebounceTimer)
-  configDebounceTimer = setTimeout(saveConfig, 250)
+  configDebounceTimer = setTimeout(saveConfig, 150)
 }
 
 async function saveConfig() {
-  const jsonStr = JSON.stringify(config, null, 2).replace(/'/g, "'\\x27'")
-  await execShell(`mkdir -p /data/adb/modules/hyperring/state && echo '${jsonStr}' > /data/adb/modules/hyperring/state/config.json`)
+  try {
+    const jsonStr = JSON.stringify(config)
+    const b64 = btoa(unescape(encodeURIComponent(jsonStr)))
+    await execShell(`mkdir -p /data/adb/modules/hyperring/state && echo '${b64}' | base64 -d > /data/adb/modules/hyperring/state/config.json`)
+  } catch (e) {}
 }
 
 function toggleConfig(key) {
@@ -1144,9 +1147,11 @@ function nudge(dx, dy) {
 
 async function toggleReticle() {
   if (isReticleActive.value) {
+    previewMode.value = 'off'
     await sendTrigger('calibrate_off')
     showToast('Reticle dismissed')
   } else {
+    previewMode.value = 'reticle'
     await sendTrigger('calibrate')
     showToast('Reticle active on screen')
   }

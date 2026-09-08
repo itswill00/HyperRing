@@ -221,7 +221,7 @@ public class HyperRingOverlay {
                 return false;
             }
 
-            if (Math.abs(velocity) < 0.04f && Math.abs(current - target) < 0.04f) {
+            if (Math.abs(velocity) < 0.25f && Math.abs(current - target) < 0.25f) {
                 current = target;
                 velocity = 0f;
                 return false;
@@ -230,7 +230,7 @@ public class HyperRingOverlay {
         }
 
         public boolean isMoving() {
-            return Math.abs(velocity) > 0.04f || Math.abs(current - target) > 0.04f;
+            return Math.abs(velocity) > 0.25f || Math.abs(current - target) > 0.25f;
         }
     }
 
@@ -549,12 +549,18 @@ public class HyperRingOverlay {
                 @Override
                 public void onReceive(Context c, Intent intent) {
                     if (intent == null || !enableVolume) return;
-                    int stream = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", AudioManager.STREAM_MUSIC);
+                    int stream = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1);
+                    // Only trigger for music stream (3), ignore system/ring/accessibility streams
+                    if (stream != AudioManager.STREAM_MUSIC) return;
                     int val = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_VALUE", -1);
-                    if (val >= 0) {
-                        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-                        int max = am != null ? am.getStreamMaxVolume(stream) : 15;
-                        volumePercent = Math.round((val / (float) Math.max(1, max)) * 100f);
+                    int prevVal = intent.getIntExtra("android.media.EXTRA_PREV_VOLUME_STREAM_VALUE", -1);
+                    // Ignore if value didn't change (spurious fire)
+                    if (val < 0 || val == prevVal) return;
+                    AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+                    int max = am != null ? am.getStreamMaxVolume(stream) : 15;
+                    volumePercent = Math.round((val / (float) Math.max(1, max)) * 100f);
+                    lastVolumeLevel = val;
+                    if (!previewLock && currentIsland != STATE_CALIBRATION) {
                         showIsland(STATE_VOLUME, 1800);
                     }
                 }
@@ -670,7 +676,6 @@ public class HyperRingOverlay {
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
 
         int initDiameter = Math.round(cutoutRadius * 2.0f);
@@ -683,17 +688,23 @@ public class HyperRingOverlay {
                 PixelFormat.TRANSLUCENT
         );
 
+        float effCutoutX = cutoutCenterX + xOffset;
+        float effCutoutY = cutoutCenterY + yOffset;
+
         if ("left".equalsIgnoreCase(pillAlignment)) {
             params.gravity = Gravity.TOP | Gravity.START;
-            params.x = Math.round((cutoutCenterX + xOffset) - cutoutRadius);
+            params.x = Math.round(effCutoutX - cutoutRadius);
         } else if ("right".equalsIgnoreCase(pillAlignment)) {
             params.gravity = Gravity.TOP | Gravity.END;
-            params.x = Math.round(displayWidthPx - (cutoutCenterX + xOffset + cutoutRadius));
+            params.x = Math.round(displayWidthPx - (effCutoutX + cutoutRadius));
+        } else if ("freeform".equalsIgnoreCase(pillAlignment)) {
+            params.gravity = Gravity.TOP | Gravity.START;
+            params.x = Math.round(effCutoutX - cutoutRadius);
         } else {
             params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-            params.x = Math.round(xOffset);
+            params.x = Math.round(effCutoutX - (displayWidthPx / 2.0f));
         }
-        params.y = Math.round((cutoutCenterY + yOffset) - cutoutRadius);
+        params.y = Math.round(effCutoutY - cutoutRadius);
 
         try {
             java.lang.reflect.Field f = WindowManager.LayoutParams.class.getField("LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS");
@@ -706,7 +717,7 @@ public class HyperRingOverlay {
         }
 
         windowManager.addView(ringView, params);
-        if (!stealthRingIdle && currentIsland == STATE_IDLE) {
+        if (currentIsland == STATE_IDLE) {
             ringView.setVisibility(View.GONE);
         }
     }
@@ -1447,13 +1458,29 @@ public class HyperRingOverlay {
             }
 
             // Continue loop only if springs are still in motion, timeouts are active, or media is playing
-            boolean needNextFrame = anyMoving 
-                    || (currentIsland == STATE_MEDIA && isMediaPlaying) 
-                    || (expandCollapseTime > 0) 
-                    || (currentIsland == STATE_CALIBRATION);
+            // For media: only keep loop at 15fps for audio bar animation (not full 60fps)
+            boolean mediaNeedsAnim = currentIsland == STATE_MEDIA && isMediaPlaying && !isCollapsing;
+            boolean needNextFrame = anyMoving
+                    || mediaNeedsAnim
+                    || (expandCollapseTime > 0 && !isCollapsing)
+                    || (currentIsland == STATE_CALIBRATION && !isCollapsing);
 
             if (needNextFrame) {
-                Choreographer.getInstance().postFrameCallback(this);
+                if (mediaNeedsAnim && !anyMoving) {
+                    // Throttle audio bar updates to ~15fps to reduce CPU load
+                    handler.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (isLoopRunning && currentIsland == STATE_MEDIA && isMediaPlaying) {
+                                Choreographer.getInstance().postFrameCallback(vsyncCallback);
+                            } else {
+                                isLoopRunning = false;
+                            }
+                        }
+                    }, 67);
+                } else {
+                    Choreographer.getInstance().postFrameCallback(this);
+                }
             } else {
                 isLoopRunning = false;
                 onAnimationSettled();
@@ -1461,43 +1488,78 @@ public class HyperRingOverlay {
         }
     };
 
-    public static void showIsland(int state, long timeoutMs) {
-        currentIsland = state;
-        activeIslandType = state;
-        isCollapsing = false;
-        isExpanded = false;
-        expandCollapseTime = (timeoutMs > 0) ? (SystemClock.uptimeMillis() + timeoutMs) : 0L;
+    public static void showIsland(final int state, final long timeoutMs) {
+        Runnable r = new Runnable() {
+            @Override
+            public void run() {
+                currentIsland = state;
+                activeIslandType = state;
+                isCollapsing = false;
+                isExpanded = false;
+                expandCollapseTime = (timeoutMs > 0) ? (SystemClock.uptimeMillis() + timeoutMs) : 0L;
 
-        if (springW != null) {
-            springW.setParameters(springStiffness, springDamping);
-            springH.setParameters(springStiffness, springDamping);
-            springR.setParameters(springStiffness, springDamping);
-            springContentAlpha.setParameters(springStiffness, springDamping);
+                if (springW != null) {
+                    springW.setParameters(springStiffness, springDamping);
+                    springH.setParameters(springStiffness, springDamping);
+                    springR.setParameters(springStiffness, springDamping);
+                    springContentAlpha.setParameters(springStiffness, springDamping);
+                }
+
+                prepareWindowForTarget();
+                if (ringView != null && ringView.getVisibility() != View.VISIBLE) {
+                    ringView.setVisibility(View.VISIBLE);
+                }
+
+                if (!isLoopRunning && checkScreenInteractive()) {
+                    isLoopRunning = true;
+                    lastFrameNanos = System.nanoTime();
+                    Choreographer.getInstance().postFrameCallback(vsyncCallback);
+                }
+            }
+        };
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            r.run();
+        } else if (handler != null) {
+            handler.post(r);
         }
-
-        wakeEngineLoop();
     }
 
     public static void startCollapse() {
-        if (isCollapsing) return;
-        isCollapsing = true;
-        expandCollapseTime = 0L;
+        Runnable r = new Runnable() {
+            @Override
+            public void run() {
+                if (isCollapsing || currentIsland == STATE_IDLE) return;
+                isCollapsing = true;
+                expandCollapseTime = 0L;
 
-        float initD = cutoutRadius * 2.0f;
-        if (springW != null) {
-            springW.setTarget(initD);
-            springH.setTarget(initD);
-            springR.setTarget(cutoutRadius);
-            springContentAlpha.setTarget(0.0f);
+                float initD = cutoutRadius * 2.0f;
+                if (springW != null) {
+                    springW.setTarget(initD);
+                    springH.setTarget(initD);
+                    springR.setTarget(cutoutRadius);
+                    springContentAlpha.setTarget(0.0f);
 
-            // Snappy critically-damped collapse (alpha fades fast ~120ms, pill smoothly shrinks ~200ms)
-            springContentAlpha.setParameters(520f, 1.05f);
-            springW.setParameters(480f, 0.98f);
-            springH.setParameters(480f, 0.98f);
-            springR.setParameters(480f, 0.98f);
+                    // Snappy critically-damped collapse (alpha fades fast ~120ms, pill smoothly shrinks ~200ms)
+                    springContentAlpha.setParameters(520f, 1.05f);
+                    springW.setParameters(480f, 0.98f);
+                    springH.setParameters(480f, 0.98f);
+                    springR.setParameters(480f, 0.98f);
+                }
+
+                if (!isLoopRunning && checkScreenInteractive()) {
+                    isLoopRunning = true;
+                    lastFrameNanos = System.nanoTime();
+                    Choreographer.getInstance().postFrameCallback(vsyncCallback);
+                }
+            }
+        };
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            r.run();
+        } else if (handler != null) {
+            handler.post(r);
         }
-
-        wakeEngineLoop();
     }
 
     public static void wakeEngineLoop() {
@@ -1637,7 +1699,7 @@ public class HyperRingOverlay {
 
     /**
      * Pre-allocates window bounds to contain upcoming animations.
-     * Called ONCE before animation starts, avoiding mid-animation window resizing.
+     * Keeps surface sizing stable and coordinates centered over punch hole.
      */
     private static void prepareWindowForTarget() {
         if (params == null || windowManager == null || ringView == null) return;
@@ -1645,63 +1707,24 @@ public class HyperRingOverlay {
         float effCutoutX = cutoutCenterX + xOffset;
         float effCutoutY = cutoutCenterY + yOffset;
 
+        int targetFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+
         if (currentIsland == STATE_IDLE && !isCollapsing) {
-            int targetFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
-                    | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-
-            int d = Math.round(cutoutRadius * 2.0f);
-            int y = Math.round(effCutoutY - cutoutRadius);
-
-            boolean changed = false;
-            if (params.width != d || params.height != d || params.y != y || params.flags != targetFlags) {
-                params.width = d;
-                params.height = d;
-                params.y = y;
-                params.flags = targetFlags;
-                changed = true;
-            }
-            if ("left".equalsIgnoreCase(pillAlignment)) {
-                int x = Math.round(effCutoutX - cutoutRadius);
-                if (params.gravity != (Gravity.TOP | Gravity.START) || params.x != x) {
-                    params.gravity = Gravity.TOP | Gravity.START;
-                    params.x = x;
-                    changed = true;
-                }
-            } else if ("right".equalsIgnoreCase(pillAlignment)) {
-                int x = Math.round(displayWidthPx - (effCutoutX + cutoutRadius));
-                if (params.gravity != (Gravity.TOP | Gravity.END) || params.x != x) {
-                    params.gravity = Gravity.TOP | Gravity.END;
-                    params.x = x;
-                    changed = true;
-                }
-            } else {
-                int x = Math.round(xOffset);
-                if (params.gravity != (Gravity.TOP | Gravity.CENTER_HORIZONTAL) || params.x != x) {
-                    params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-                    params.x = x;
-                    changed = true;
-                }
-            }
-            if (changed) {
-                try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+            targetFlags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            if (ringView.getVisibility() != View.GONE) {
+                ringView.setVisibility(View.GONE);
             }
             return;
         }
-
-        int targetFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR;
 
         int reqW;
         int reqH;
         int reqY;
 
         if (currentIsland == STATE_CALIBRATION) {
-            reqW = Math.round(Math.max(cutoutRadius * 2.4f, dpToPx(72)));
+            reqW = Math.round(Math.max(cutoutRadius * 3.0f, dpToPx(72)));
             reqH = reqW;
             reqY = Math.round(effCutoutY - (reqH / 2.0f));
         } else if (isExpanded) {
@@ -1714,7 +1737,22 @@ public class HyperRingOverlay {
                 reqY = Math.max(dpToPx(4), Math.min(displayHeightPx - reqH - dpToPx(12), Math.round(effCutoutY - cutoutRadius - dpToPx(2))));
             }
         } else {
-            int defaultW = (currentIsland == STATE_NOTIFICATION) ? dpToPx(150) : dpToPx(142);
+            int defaultW;
+            if (currentIsland == STATE_CHARGING) {
+                defaultW = dpToPx(138);
+            } else if (currentIsland == STATE_MEDIA) {
+                defaultW = dpToPx(148);
+            } else if (currentIsland == STATE_VOLUME) {
+                defaultW = dpToPx(144);
+            } else if (currentIsland == STATE_RINGER) {
+                defaultW = dpToPx(136);
+            } else if (currentIsland == STATE_NOTIFICATION) {
+                defaultW = dpToPx(150);
+            } else if (currentIsland == STATE_TORCH) {
+                defaultW = dpToPx(132);
+            } else {
+                defaultW = dpToPx(142);
+            }
             reqW = (customPillWidth > 0) ? dpToPx(customPillWidth) : defaultW;
             reqH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
             if (notchMode) {
@@ -1724,8 +1762,8 @@ public class HyperRingOverlay {
             }
         }
 
-        int newW = Math.max(params.width, reqW);
-        int newH = Math.max(params.height, reqH);
+        int newW = reqW;
+        int newH = reqH;
 
         boolean changed = false;
         if (params.width != newW || params.height != newH || params.y != reqY || params.flags != targetFlags) {
@@ -1736,27 +1774,26 @@ public class HyperRingOverlay {
             changed = true;
         }
 
+        int targetGravity;
+        int targetX;
         if ("left".equalsIgnoreCase(pillAlignment)) {
-            int x = Math.round(effCutoutX - (reqH / 2.0f));
-            if (params.gravity != (Gravity.TOP | Gravity.START) || params.x != x) {
-                params.gravity = Gravity.TOP | Gravity.START;
-                params.x = x;
-                changed = true;
-            }
+            targetGravity = Gravity.TOP | Gravity.START;
+            targetX = Math.round(effCutoutX - (newW / 2.0f));
         } else if ("right".equalsIgnoreCase(pillAlignment)) {
-            int x = Math.round(displayWidthPx - (effCutoutX + (reqH / 2.0f)));
-            if (params.gravity != (Gravity.TOP | Gravity.END) || params.x != x) {
-                params.gravity = Gravity.TOP | Gravity.END;
-                params.x = x;
-                changed = true;
-            }
+            targetGravity = Gravity.TOP | Gravity.END;
+            targetX = Math.round(displayWidthPx - (effCutoutX + (newW / 2.0f)));
+        } else if ("freeform".equalsIgnoreCase(pillAlignment)) {
+            targetGravity = Gravity.TOP | Gravity.START;
+            targetX = Math.round(effCutoutX - (newW / 2.0f));
         } else {
-            int x = Math.round(xOffset);
-            if (params.gravity != (Gravity.TOP | Gravity.CENTER_HORIZONTAL) || params.x != x) {
-                params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-                params.x = x;
-                changed = true;
-            }
+            targetGravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+            targetX = Math.round(effCutoutX - (displayWidthPx / 2.0f));
+        }
+
+        if (params.gravity != targetGravity || params.x != targetX) {
+            params.gravity = targetGravity;
+            params.x = targetX;
+            changed = true;
         }
 
         if (ringView.getVisibility() != View.VISIBLE) {
@@ -1770,7 +1807,7 @@ public class HyperRingOverlay {
 
     /**
      * Called once when all springs reach stationary equilibrium.
-     * Snaps window bounds neatly to the settled card size.
+     * Completes collapse cleanly without surface resize flicker.
      */
     private static void onAnimationSettled() {
         if (params == null || windowManager == null || ringView == null) return;
@@ -1788,29 +1825,9 @@ public class HyperRingOverlay {
                 activeIslandType = STATE_IDLE;
             }
 
-            if (!stealthRingIdle) {
-                ringView.setVisibility(View.GONE);
-            }
-
-            float effCutoutX = cutoutCenterX + xOffset;
-            float effCutoutY = cutoutCenterY + yOffset;
-            int d = Math.round(cutoutRadius * 2.0f);
-            params.width = d;
-            params.height = d;
-            params.y = Math.round(effCutoutY - cutoutRadius);
+            // Instantly hide view on idle settlement to avoid any surface transform artifacts
+            ringView.setVisibility(View.GONE);
             params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-
-            if ("left".equalsIgnoreCase(pillAlignment)) {
-                params.gravity = Gravity.TOP | Gravity.START;
-                params.x = Math.round(effCutoutX - cutoutRadius);
-            } else if ("right".equalsIgnoreCase(pillAlignment)) {
-                params.gravity = Gravity.TOP | Gravity.END;
-                params.x = Math.round(displayWidthPx - (effCutoutX + cutoutRadius));
-            } else {
-                params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-                params.x = Math.round(xOffset);
-            }
-
             try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
             persistStatusAsync();
         } else {
@@ -1906,11 +1923,7 @@ public class HyperRingOverlay {
                     java.lang.Process p = null;
                     try {
                         p = Runtime.getRuntime().exec(new String[]{
-                                "logcat", "-v", "brief", "-s",
-                                "notification_enqueue:I",
-                                "AS.AudioService:D",
-                                "MediaSessionService:D",
-                                "*:S"
+                                "logcat", "-b", "all", "-v", "brief"
                         });
                         BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
                         String line;
@@ -1919,25 +1932,30 @@ public class HyperRingOverlay {
                         while ((line = reader.readLine()) != null) {
                             if (!checkScreenInteractive()) continue;
 
-                            // Volume Event Detection
-                            if (line.contains("Volume controller visible: false")) {
-                                continue;
-                            }
-                            if (enableVolume && (line.contains("adjustStreamVolume") 
-                                    || line.contains("Volume controller visible: true") 
+                            if (enableVolume && (line.contains("Volume controller visible: true")
+                                    || line.contains("vol.MiuiVolumeDialog")
+                                    || line.contains("MediaVolumeConr")
                                     || line.contains("dispatchVolumeKeyEvent"))) {
                                 AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
                                 if (am != null) {
                                     int stream = AudioManager.STREAM_MUSIC;
                                     int cur = am.getStreamVolume(stream);
-                                    int max = am.getStreamMaxVolume(stream);
-                                    volumePercent = Math.round((cur / (float) Math.max(1, max)) * 100f);
-                                    lastVolumeLevel = cur;
+                                    // Only show if music volume actually changed
+                                    if (lastVolumeLevel != cur) {
+                                        int max = am.getStreamMaxVolume(stream);
+                                        volumePercent = Math.round((cur / (float) Math.max(1, max)) * 100f);
+                                        lastVolumeLevel = cur;
 
-                                    if (!previewLock && currentIsland != STATE_CALIBRATION) {
-                                        showIsland(STATE_VOLUME, 2000);
+                                        if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                                            showIsland(STATE_VOLUME, 2000);
+                                        }
                                     }
                                 }
+                            }
+
+                            // Media Playback State Event Detection (targeted without AudioTrack false positives)
+                            if (enableMedia && (line.contains("MediaSession") || line.contains("PlaybackActivityMonitor"))) {
+                                queryMediaSessionNative();
                             }
 
                             // Notification Event Detection
@@ -2235,53 +2253,101 @@ public class HyperRingOverlay {
 
     private static void queryMediaSessionNative() {
         try {
-            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-            boolean audioActive = am != null && am.isMusicActive();
-
             java.lang.Process p = Runtime.getRuntime().exec(new String[]{"dumpsys", "media_session"});
             BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
             String line;
+            boolean inStack = false;
+            boolean curSessionPlaying = false;
+
+            String curSessionTitle = "";
+            String curSessionArtist = "";
+
             boolean foundPlaying = false;
-            boolean foundPaused = false;
-            String tempTitle = "";
-            String tempArtist = "";
+            String playingTitle = "";
+            String playingArtist = "";
 
             while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.contains("state=PlaybackState") || line.contains("PlaybackState {state=")) {
-                    if (line.contains("state=3") || line.contains("STATE_PLAYING") || line.contains("state=PLAYING")) {
-                        foundPlaying = true;
-                    } else if (line.contains("state=2") || line.contains("STATE_PAUSED") || line.contains("state=PAUSED")) {
-                        foundPaused = true;
-                    }
-                } else if (line.contains("description=")) {
-                    int dIdx = line.indexOf("description=");
-                    String desc = line.substring(dIdx + 12).trim();
-                    String[] parts = desc.split(",");
-                    if (parts.length > 0 && !parts[0].trim().isEmpty()) {
-                        tempTitle = parts[0].trim();
-                    }
-                    if (parts.length > 1 && !parts[1].trim().isEmpty()) {
-                        tempArtist = parts[1].trim();
-                    }
+                if (line.contains("Sessions Stack")) {
+                    inStack = true;
+                    continue;
                 }
-                if (foundPlaying && !tempTitle.isEmpty()) {
+                if (inStack && (line.startsWith("Audio playback") || line.startsWith("Media session config:"))) {
+                    if (curSessionPlaying && !foundPlaying) {
+                        foundPlaying = true;
+                        playingTitle = curSessionTitle;
+                        playingArtist = curSessionArtist;
+                    }
                     break;
                 }
+                if (!inStack) continue;
+
+                // Session header starts with 4 spaces (not 6)
+                if (line.startsWith("    ") && !line.startsWith("      ")) {
+                    if (curSessionPlaying && !foundPlaying) {
+                        foundPlaying = true;
+                        playingTitle = curSessionTitle;
+                        playingArtist = curSessionArtist;
+                        break;
+                    }
+                    curSessionPlaying = false;
+                    curSessionTitle = "";
+                    curSessionArtist = "";
+                    continue;
+                }
+
+                String trimmed = line.trim();
+                if (trimmed.contains("state=PlaybackState") || trimmed.contains("PlaybackState {state=")) {
+                    if (trimmed.contains("state=3") || trimmed.contains("STATE_PLAYING") || trimmed.contains("state=PLAYING")) {
+                        curSessionPlaying = true;
+                    }
+                } else if (trimmed.contains("description=")) {
+                    int dIdx = trimmed.indexOf("description=");
+                    String desc = trimmed.substring(dIdx + 12).trim();
+                    if (!desc.isEmpty() && !desc.equals("null")) {
+                        String[] parts = desc.split(",");
+                        if (parts.length > 0 && !parts[0].trim().isEmpty()) {
+                            curSessionTitle = parts[0].trim();
+                        }
+                        if (parts.length > 1 && !parts[1].trim().isEmpty()) {
+                            curSessionArtist = parts[1].trim();
+                        }
+                    }
+                }
+            }
+            if (curSessionPlaying && !foundPlaying) {
+                foundPlaying = true;
+                playingTitle = curSessionTitle;
+                playingArtist = curSessionArtist;
             }
             reader.close();
             p.destroy();
 
             boolean prevPlay = isMediaPlaying;
-            boolean nowPlaying = foundPlaying || (audioActive && !foundPaused);
-            isMediaPlaying = nowPlaying;
-            if (!tempTitle.isEmpty()) {
-                mediaTitle = tempTitle;
-                if (!tempArtist.isEmpty()) mediaArtist = tempArtist;
+            isMediaPlaying = foundPlaying;
+
+            if (foundPlaying) {
+                if (!playingTitle.isEmpty()) {
+                    mediaTitle = playingTitle;
+                }
+                if (!playingArtist.isEmpty()) {
+                    mediaArtist = playingArtist;
+                }
             }
 
             if (isMediaPlaying != prevPlay) {
-                wakeEngineLoop();
+                if (isMediaPlaying && enableMedia) {
+                    if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                        showIsland(STATE_MEDIA, 0);
+                    }
+                } else if (!isMediaPlaying) {
+                    if (currentIsland == STATE_MEDIA) {
+                        startCollapse();
+                    }
+                }
+            } else if (isMediaPlaying && enableMedia && currentIsland == STATE_IDLE && !isCollapsing) {
+                if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                    showIsland(STATE_MEDIA, 0);
+                }
             }
         } catch (Throwable ignored) {}
     }
@@ -2602,6 +2668,18 @@ public class HyperRingOverlay {
                 springR.setParameters(springStiffness, springDamping);
                 springContentAlpha.setParameters(springStiffness, springDamping);
             }
+
+            if (currentIsland == STATE_CALIBRATION) {
+                float targetW = Math.round(Math.max(cutoutRadius * 3.0f, dpToPx(72)));
+                if (springW != null) {
+                    springW.snapTo(targetW);
+                    springH.snapTo(targetW);
+                    springR.snapTo(cutoutRadius);
+                    springContentAlpha.snapTo(1.0f);
+                }
+            }
+            prepareWindowForTarget();
+            if (ringView != null) ringView.invalidate();
         } catch (Throwable ignored) {}
     }
 
