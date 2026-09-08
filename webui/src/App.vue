@@ -789,6 +789,71 @@
             </label>
           </div>
 
+          <!-- Audio Pulse Color Presets & Custom Picker -->
+          <div class="preset-row" v-if="config.media_show_waveform" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.06);">
+            <span class="row-meta-label">Pulse audio color</span>
+            <div class="segment-container" style="flex-wrap: wrap; gap: 4px;">
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_pulse_color === 'auto' || !config.media_pulse_color }"
+                @click="config.media_pulse_color = 'auto'; saveConfig();"
+              >
+                Auto
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_pulse_color === '#38BDF8' }"
+                @click="config.media_pulse_color = '#38BDF8'; saveConfig();"
+              >
+                Cyan
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_pulse_color === '#22C55E' }"
+                @click="config.media_pulse_color = '#22C55E'; saveConfig();"
+              >
+                Green
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_pulse_color === '#A855F7' }"
+                @click="config.media_pulse_color = '#A855F7'; saveConfig();"
+              >
+                Purple
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_pulse_color === '#F59E0B' }"
+                @click="config.media_pulse_color = '#F59E0B'; saveConfig();"
+              >
+                Amber
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_pulse_color === '#F43F5E' }"
+                @click="config.media_pulse_color = '#F43F5E'; saveConfig();"
+              >
+                Rose
+              </button>
+              <label class="segment-btn" style="display: inline-flex; align-items: center; gap: 5px; cursor: pointer; position: relative; overflow: hidden;" :class="{ active: isCustomPulseColor }">
+                <input
+                  type="color"
+                  :value="config.media_pulse_color && config.media_pulse_color !== 'auto' ? config.media_pulse_color : '#38BDF8'"
+                  @input="e => { config.media_pulse_color = e.target.value; saveConfigDebounced(); }"
+                  style="position: absolute; opacity: 0; width: 100%; height: 100%; cursor: pointer;"
+                />
+                <span :style="{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', backgroundColor: config.media_pulse_color && config.media_pulse_color !== 'auto' ? config.media_pulse_color : '#38BDF8' }"></span>
+                Custom
+              </label>
+            </div>
+          </div>
+
           <!-- Dynamic Ambient Glow Toggle -->
           <div class="md3-list-row" style="padding: 12px 0; border-top: 1px solid rgba(255, 255, 255, 0.06);" @click="toggleConfig('media_ambient_glow')">
             <div class="row-left">
@@ -1114,6 +1179,7 @@ const config = reactive({
   media_show_pill_art: true,
   media_art_style: 'rounded',
   media_show_waveform: true,
+  media_pulse_color: 'auto',
   media_ambient_glow: true,
   media_glow_opacity: 25,
   media_marquee: true,
@@ -1162,6 +1228,9 @@ let statusPollInterval = null
 let toastTimer = null
 
 const isReticleActive = computed(() => liveState.active_island === 'calibration' || previewMode.value === 'reticle')
+const isCustomPulseColor = computed(() => {
+  return config.media_pulse_color && !['auto', '#38BDF8', '#22C55E', '#A855F7', '#F59E0B', '#F43F5E'].includes(config.media_pulse_color)
+})
 
 const previewMode = ref('off')
 const previewModeLabel = computed(() => {

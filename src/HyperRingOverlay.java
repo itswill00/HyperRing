@@ -108,6 +108,7 @@ public class HyperRingOverlay {
     private static boolean mediaShowPillArt    = true;
     private static String mediaArtStyle        = "rounded";
     private static boolean mediaShowWaveform   = true;
+    private static String mediaPulseColor      = "auto";
     private static boolean mediaAmbientGlow    = true;
     private static int mediaGlowOpacity        = 25;
     private static boolean mediaMarquee        = true;
@@ -310,6 +311,7 @@ public class HyperRingOverlay {
     private static Paint paintTextTertiary;
     private static Paint paintAccentGreen;
     private static Paint paintAccentCyan;
+    private static Paint paintAudioPulse;
     private static Paint paintAccentAmber;
     private static Paint paintIconFill;
     private static Paint paintCalibRing;
@@ -563,6 +565,9 @@ public class HyperRingOverlay {
         paintAccentCyan = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintAccentCyan.setColor(Color.parseColor("#38BDF8"));
         paintAccentCyan.setStyle(Paint.Style.FILL);
+
+        paintAudioPulse = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paintAudioPulse.setStyle(Paint.Style.FILL);
 
         paintAccentAmber = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintAccentAmber.setColor(Color.parseColor("#F59E0B"));
@@ -1514,7 +1519,22 @@ public class HyperRingOverlay {
     }
 
     private static void renderAudioBars(Canvas canvas, float startX, float centerY, float alpha) {
-        paintAccentCyan.setAlpha(Math.min(255, Math.max(0, (int) (alpha * 255))));
+        int baseColor = Color.parseColor("#38BDF8");
+        if ("auto".equalsIgnoreCase(mediaPulseColor)) {
+            if (mediaDominantColor != Color.TRANSPARENT) {
+                baseColor = mediaDominantColor;
+            }
+        } else if (mediaPulseColor != null && !mediaPulseColor.isEmpty()) {
+            try {
+                baseColor = Color.parseColor(mediaPulseColor);
+            } catch (Throwable ignored) {}
+        }
+        if (paintAudioPulse == null) {
+            paintAudioPulse = new Paint(Paint.ANTI_ALIAS_FLAG);
+            paintAudioPulse.setStyle(Paint.Style.FILL);
+        }
+        paintAudioPulse.setColor(baseColor);
+        paintAudioPulse.setAlpha(Math.min(255, Math.max(0, (int) (alpha * 255))));
         float barW = dpToPx(2.2f);
         float gap = dpToPx(2.0f);
         float maxH = dpToPx(13);
@@ -1525,7 +1545,7 @@ public class HyperRingOverlay {
             float bTop = centerY - (bh / 2.0f);
             float bBottom = centerY + (bh / 2.0f);
             artRectF.set(bx, bTop, bx + barW, bBottom);
-            canvas.drawRoundRect(artRectF, barW / 2f, barW / 2f, paintAccentCyan);
+            canvas.drawRoundRect(artRectF, barW / 2f, barW / 2f, paintAudioPulse);
         }
     }
 
@@ -3946,6 +3966,7 @@ public class HyperRingOverlay {
             mediaShowPillArt    = parseBool(json, "media_show_pill_art", mediaShowPillArt);
             mediaArtStyle       = parseStr(json, "media_art_style", mediaArtStyle);
             mediaShowWaveform   = parseBool(json, "media_show_waveform", mediaShowWaveform);
+            mediaPulseColor     = parseStr(json, "media_pulse_color", mediaPulseColor);
             mediaAmbientGlow    = parseBool(json, "media_ambient_glow", mediaAmbientGlow);
             mediaGlowOpacity    = parseInt(json, "media_glow_opacity", mediaGlowOpacity);
             mediaMarquee        = parseBool(json, "media_marquee", mediaMarquee);
