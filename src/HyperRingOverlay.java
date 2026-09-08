@@ -10,10 +10,21 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.RectF;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.RadialGradient;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.hardware.camera2.CameraManager;
 import android.hardware.display.DisplayManager;
 import android.media.AudioManager;
+import android.media.MediaMetadata;
+import android.media.session.MediaController;
+import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
+import android.net.Uri;
+import java.io.InputStream;
+import java.util.List;
 import android.os.BatteryManager;
 import android.os.FileObserver;
 import android.os.Handler;
@@ -91,6 +102,12 @@ public class HyperRingOverlay {
     private static boolean masterEnabled       = true;
     private static boolean previewLock         = false;
     private static boolean enableMedia         = true;
+    private static boolean mediaShowPillArt    = true;
+    private static String mediaArtStyle        = "rounded";
+    private static boolean mediaShowWaveform   = true;
+    private static boolean mediaAmbientGlow    = true;
+    private static int mediaGlowOpacity        = 25;
+    private static boolean mediaMarquee        = true;
     private static boolean enableCharging      = true;
     private static boolean enableVolume        = true;
     private static boolean enableRinger        = true;
@@ -144,6 +161,14 @@ public class HyperRingOverlay {
     private static volatile String mediaArtist = "Media";
     private static volatile boolean isMediaPlaying = false;
     private static volatile long lastMediaPoll = 0L;
+    private static volatile long mediaTrackPosition = 0L;
+    private static volatile long mediaPositionUpdateTime = 0L;
+    private static volatile long mediaTrackDuration = 0L;
+    private static volatile MediaController activeMediaController = null;
+    private static volatile Bitmap currentPillArt = null;
+    private static volatile Bitmap currentCardArt = null;
+    private static volatile int mediaDominantColor = Color.TRANSPARENT;
+    private static volatile String lastArtKey = "";
 
     // Telemetry: Volume
     private static volatile int volumePercent = 50;
@@ -270,7 +295,16 @@ public class HyperRingOverlay {
     private static Paint paintCalibRing;
     private static Paint paintCalibCross;
     private static Paint paintTrack;
+    private static Paint paintArtBitmap;
+    private static Paint paintAmbientGlow;
+    private static Paint paintProgress;
     private static RectF tempRectF;
+    private static final RectF artRectF = new RectF();
+    private static final Path artClipPath = new Path();
+    private static final Path tempClipPath = new Path();
+    private static RadialGradient cachedGlowGradient = null;
+    private static int cachedGlowColor = 0;
+    private static float cachedGlowW = -1f;
 
     // Touch gesture tracking
     private static float touchDownY = 0f;
@@ -522,6 +556,11 @@ public class HyperRingOverlay {
         paintTrack = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintTrack.setColor(Color.argb(32, 255, 255, 255));
         paintTrack.setStyle(Paint.Style.FILL);
+
+        paintArtBitmap = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        paintAmbientGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paintProgress = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paintProgress.setStyle(Paint.Style.FILL);
 
         tempRectF = new RectF();
     }
@@ -920,6 +959,24 @@ public class HyperRingOverlay {
             float viewH = springH.current;
 
             if (currentIsland == STATE_MEDIA) {
+                float artSize = dpToPx(50);
+                float holeRelY = (params != null) ? Math.max(0, (cutoutCenterY + yOffset) - params.y) : dpToPx(16);
+                boolean isCutoutCenter = !"left".equalsIgnoreCase(pillAlignment) && !"right".equalsIgnoreCase(pillAlignment);
+                boolean isFloatingBelow = !"cover".equalsIgnoreCase(cardPositionMode) && !notchMode;
+                float baseTopY = isFloatingBelow ? dpToPx(16) : (isCutoutCenter ? Math.max(dpToPx(24), holeRelY + cutoutRadius + dpToPx(6)) : dpToPx(20));
+
+                float barY = baseTopY + artSize + dpToPx(12);
+                float barLeft = dpToPx(18);
+                float barW = viewW - dpToPx(36);
+
+                // Interactive Seekbar tap support
+                if (mediaTrackDuration > 0 && Math.abs(y - barY) < dpToPx(14) && x >= barLeft - dpToPx(8) && x <= barLeft + barW + dpToPx(8)) {
+                    float fraction = Math.max(0f, Math.min(1f, (x - barLeft) / barW));
+                    long seekTarget = (long) (fraction * mediaTrackDuration);
+                    seekMediaTo(seekTarget);
+                    return;
+                }
+
                 float btnY = viewH - dpToPx(20);
                 float centerX = viewW / 2.0f;
                 float prevBtnX = centerX - dpToPx(65);
@@ -939,6 +996,7 @@ public class HyperRingOverlay {
                     }
                 }
                 collapseCard();
+                return;
             } else if (currentIsland == STATE_TORCH) {
                 collapseCard();
                 startCollapse();
@@ -997,9 +1055,9 @@ public class HyperRingOverlay {
 
         if (contentAlpha > 0.04f) {
             canvas.save();
-            Path clipP = new Path();
-            clipP.addRoundRect(tempRectF, curR, curR, Path.Direction.CW);
-            canvas.clipPath(clipP);
+            tempClipPath.reset();
+            tempClipPath.addRoundRect(tempRectF, curR, curR, Path.Direction.CW);
+            canvas.clipPath(tempClipPath);
 
             float compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
             float targetCardH = getDefaultCardHeight(currentIsland);
@@ -1079,12 +1137,42 @@ public class HyperRingOverlay {
             paintTextPrimary.setColor(Color.WHITE);
 
         } else if (renderType == STATE_MEDIA) {
-            paintAccentCyan.setAlpha(intAlpha);
-            drawMusicNoteIcon(canvas, iconCenterX, centerY, dpToPx(11), paintAccentCyan);
+            if (mediaShowPillArt && currentPillArt != null && !currentPillArt.isRecycled()) {
+                float artThumbSize = dpToPx(22);
+                float artLeft = iconCenterX - artThumbSize / 2.0f;
+                float artTop = centerY - artThumbSize / 2.0f;
+                artRectF.set(artLeft, artTop, artLeft + artThumbSize, artTop + artThumbSize);
 
-            boolean isCutoutCenter = !"left".equalsIgnoreCase(pillAlignment) && !"right".equalsIgnoreCase(pillAlignment);
-            float barsStart = isCutoutCenter ? (textCenterX - dpToPx(10)) : (textCenterX - dpToPx(20));
-            renderAudioBars(canvas, barsStart, centerY, alpha);
+                canvas.save();
+                artClipPath.reset();
+                if ("circle".equalsIgnoreCase(mediaArtStyle)) {
+                    artClipPath.addCircle(artRectF.centerX(), artRectF.centerY(), artThumbSize / 2.0f, Path.Direction.CW);
+                } else if ("squircle".equalsIgnoreCase(mediaArtStyle)) {
+                    artClipPath.addRoundRect(artRectF, artThumbSize * 0.38f, artThumbSize * 0.38f, Path.Direction.CW);
+                } else { // "rounded" default
+                    artClipPath.addRoundRect(artRectF, dpToPx(4.5f), dpToPx(4.5f), Path.Direction.CW);
+                }
+                canvas.clipPath(artClipPath);
+                paintArtBitmap.setAlpha(intAlpha);
+                canvas.drawBitmap(currentPillArt, null, artRectF, paintArtBitmap);
+                canvas.restore();
+            } else {
+                paintAccentCyan.setColor(Color.parseColor("#38BDF8"));
+                paintAccentCyan.setAlpha(intAlpha);
+                drawMusicNoteIcon(canvas, iconCenterX, centerY, dpToPx(11), paintAccentCyan);
+            }
+
+            if (mediaShowWaveform) {
+                boolean isCutoutCenter = !"left".equalsIgnoreCase(pillAlignment) && !"right".equalsIgnoreCase(pillAlignment);
+                float barsStart = isCutoutCenter ? (textCenterX - dpToPx(10)) : (textCenterX - dpToPx(20));
+                renderAudioBars(canvas, barsStart, centerY, alpha);
+            } else {
+                paintTextPrimary.setTextSize(spToPx(11f));
+                paintTextPrimary.setTextAlign(textAlign);
+                paintTextPrimary.setColor(Color.WHITE);
+                paintTextPrimary.setAlpha(intAlpha);
+                canvas.drawText(truncate(mediaTitle, 10), textCenterX, centerY + dpToPx(4), paintTextPrimary);
+            }
 
         } else if (renderType == STATE_VOLUME) {
             paintAccentCyan.setAlpha(intAlpha);
@@ -1144,7 +1232,8 @@ public class HyperRingOverlay {
             float bh = maxH * barHeights[i];
             float bTop = centerY - (bh / 2.0f);
             float bBottom = centerY + (bh / 2.0f);
-            canvas.drawRoundRect(new RectF(bx, bTop, bx + barW, bBottom), barW / 2f, barW / 2f, paintAccentCyan);
+            artRectF.set(bx, bTop, bx + barW, bBottom);
+            canvas.drawRoundRect(artRectF, barW / 2f, barW / 2f, paintAccentCyan);
         }
     }
 
@@ -1206,38 +1295,125 @@ public class HyperRingOverlay {
             canvas.drawText(rightSub, curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (renderType == STATE_MEDIA) {
-            float artSize = Math.min(dpToPx(48), curH - dpToPx(64));
+            float artSize = dpToPx(50);
             float artLeft = dpToPx(18);
             float artTop = baseTopY;
+            float curR = (springR != null) ? springR.current : dpToPx(24);
 
-            // Album art disc
-            paintAccentCyan.setAlpha(Math.min(255, (int) (alpha * 38)));
-            canvas.drawRoundRect(new RectF(artLeft, artTop, artLeft + artSize, artTop + artSize), dpToPx(12), dpToPx(12), paintAccentCyan);
+            // 1. Dynamic Ambient Color Glow
+            if (mediaAmbientGlow && mediaDominantColor != Color.TRANSPARENT) {
+                int glowAlpha = (int) (255 * (mediaGlowOpacity / 100f) * alpha);
+                if (glowAlpha > 0) {
+                    float glowRadius = curW * 0.75f;
+                    if (cachedGlowGradient == null || cachedGlowColor != mediaDominantColor || Math.abs(cachedGlowW - curW) > 1f) {
+                        cachedGlowColor = mediaDominantColor;
+                        cachedGlowW = curW;
+                        cachedGlowGradient = new RadialGradient(
+                            artLeft + artSize * 0.5f,
+                            artTop + artSize * 0.5f,
+                            glowRadius,
+                            mediaDominantColor,
+                            Color.TRANSPARENT,
+                            Shader.TileMode.CLAMP
+                        );
+                    }
+                    paintAmbientGlow.setShader(cachedGlowGradient);
+                    paintAmbientGlow.setAlpha(glowAlpha);
+                    tempRectF.set(0, 0, curW, curH);
+                    canvas.drawRoundRect(tempRectF, curR, curR, paintAmbientGlow);
+                    paintAmbientGlow.setShader(null);
+                }
+            }
 
-            paintAccentCyan.setAlpha(intAlpha);
-            canvas.drawCircle(artLeft + artSize / 2f, artTop + artSize / 2f, dpToPx(10), paintAccentCyan);
-            paintOledBlack.setAlpha(intAlpha);
-            canvas.drawCircle(artLeft + artSize / 2f, artTop + artSize / 2f, dpToPx(4), paintOledBlack);
+            // 2. Shared Element Album Art (50dp, 12dp rounded corners)
+            artRectF.set(artLeft, artTop, artLeft + artSize, artTop + artSize);
+            if (currentCardArt != null && !currentCardArt.isRecycled()) {
+                canvas.save();
+                artClipPath.reset();
+                artClipPath.addRoundRect(artRectF, dpToPx(12), dpToPx(12), Path.Direction.CW);
+                canvas.clipPath(artClipPath);
+                paintArtBitmap.setAlpha(intAlpha);
+                canvas.drawBitmap(currentCardArt, null, artRectF, paintArtBitmap);
+                canvas.restore();
+            } else {
+                int discColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
+                paintAccentCyan.setColor(discColor);
+                paintAccentCyan.setAlpha(Math.min(255, (int) (alpha * 38)));
+                canvas.drawRoundRect(artRectF, dpToPx(12), dpToPx(12), paintAccentCyan);
 
-            // Track & Artist text
+                paintAccentCyan.setAlpha(intAlpha);
+                canvas.drawCircle(artLeft + artSize / 2f, artTop + artSize / 2f, dpToPx(10), paintAccentCyan);
+                paintOledBlack.setAlpha(intAlpha);
+                canvas.drawCircle(artLeft + artSize / 2f, artTop + artSize / 2f, dpToPx(4), paintOledBlack);
+            }
+
+            // 3. Track Title & Artist with Marquee Scrolling
             float textLeft = artLeft + artSize + dpToPx(14);
+            float maxTextW = curW - textLeft - dpToPx(20);
+
             paintTextPrimary.setTextSize(spToPx(14));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText(truncate(mediaTitle, 20), textLeft, artTop + dpToPx(20), paintTextPrimary);
+            paintTextPrimary.setColor(Color.WHITE);
+            paintTextPrimary.setAlpha(intAlpha);
+
+            float titleW = paintTextPrimary.measureText(mediaTitle);
+            if (mediaMarquee && titleW > maxTextW) {
+                float gap = dpToPx(36);
+                float span = titleW + gap;
+                float offset = (SystemClock.uptimeMillis() / 25f) % span;
+
+                canvas.save();
+                canvas.clipRect(textLeft, artTop, curW - dpToPx(16), artTop + dpToPx(24));
+                canvas.drawText(mediaTitle, textLeft - offset, artTop + dpToPx(18), paintTextPrimary);
+                if (offset > gap) {
+                    canvas.drawText(mediaTitle, textLeft - offset + span, artTop + dpToPx(18), paintTextPrimary);
+                }
+                canvas.restore();
+            } else {
+                canvas.drawText(truncate(mediaTitle, 22), textLeft, artTop + dpToPx(18), paintTextPrimary);
+            }
 
             paintTextSecondary.setTextSize(spToPx(12));
-            canvas.drawText(truncate(mediaArtist.isEmpty() ? "Media Playback" : mediaArtist, 22), textLeft, artTop + dpToPx(38), paintTextSecondary);
+            paintTextSecondary.setTextAlign(Paint.Align.LEFT);
+            paintTextSecondary.setColor(Color.WHITE);
+            paintTextSecondary.setAlpha(Math.min(255, (int) (alpha * 175)));
+            canvas.drawText(truncate(mediaArtist.isEmpty() ? "Media Playback" : mediaArtist, 24), textLeft, artTop + dpToPx(36), paintTextSecondary);
 
-            // Progress track
-            float barY = artTop + artSize + dpToPx(14);
+            // 4. Interactive Progress Seekbar & Time labels
+            float barY = artTop + artSize + dpToPx(12);
+            float barLeft = dpToPx(18);
             float barW = curW - dpToPx(36);
-            paintTrack.setAlpha(Math.min(255, (int) (alpha * 40)));
-            canvas.drawRoundRect(new RectF(dpToPx(18), barY, dpToPx(18) + barW, barY + dpToPx(2.5f)), dpToPx(2), dpToPx(2), paintTrack);
+            float barH = dpToPx(3.5f);
 
-            paintAccentCyan.setAlpha(intAlpha);
-            canvas.drawRoundRect(new RectF(dpToPx(18), barY, dpToPx(18) + (barW * 0.42f), barY + dpToPx(2.5f)), dpToPx(2), dpToPx(2), paintAccentCyan);
+            long curPos = mediaTrackPosition;
+            if (isMediaPlaying && mediaPositionUpdateTime > 0) {
+                curPos += (SystemClock.elapsedRealtime() - mediaPositionUpdateTime);
+            }
+            if (mediaTrackDuration > 0 && curPos > mediaTrackDuration) curPos = mediaTrackDuration;
+            float progressFraction = (mediaTrackDuration > 0) ? Math.max(0f, Math.min(1f, (float) curPos / (float) mediaTrackDuration)) : 0.42f;
 
-            // Playback controls
+            paintTrack.setAlpha(Math.min(255, (int) (alpha * 45)));
+            artRectF.set(barLeft, barY, barLeft + barW, barY + barH);
+            canvas.drawRoundRect(artRectF, barH / 2f, barH / 2f, paintTrack);
+
+            int progColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
+            paintProgress.setColor(progColor);
+            paintProgress.setAlpha(intAlpha);
+            artRectF.set(barLeft, barY, barLeft + (barW * progressFraction), barY + barH);
+            canvas.drawRoundRect(artRectF, barH / 2f, barH / 2f, paintProgress);
+            canvas.drawCircle(barLeft + (barW * progressFraction), barY + barH / 2f, dpToPx(4.5f), paintProgress);
+
+            if (mediaTrackDuration > 0) {
+                paintTextTertiary.setTextSize(spToPx(10));
+                paintTextTertiary.setTextAlign(Paint.Align.LEFT);
+                paintTextTertiary.setAlpha(Math.min(255, (int) (alpha * 140)));
+                canvas.drawText(formatTimeMs(curPos), barLeft, barY + dpToPx(13), paintTextTertiary);
+
+                paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
+                canvas.drawText("-" + formatTimeMs(Math.max(0, mediaTrackDuration - curPos)), barLeft + barW, barY + dpToPx(13), paintTextTertiary);
+            }
+
+            // 5. Playback Transport Controls
             float btnY = curH - dpToPx(20);
             float centerX = curW / 2.0f;
             float prevBtnX = centerX - dpToPx(65);
@@ -1586,7 +1762,7 @@ public class HyperRingOverlay {
 
             boolean anyMoving = swMoving || shMoving || srMoving || saMoving;
 
-            if (currentIsland == STATE_MEDIA && isMediaPlaying && (now - lastWaveStep > 85)) {
+            if (currentIsland == STATE_MEDIA && isMediaPlaying && !isExpanded && mediaShowWaveform && (now - lastWaveStep > 60)) {
                 stepAudioBars();
                 lastWaveStep = now;
             }
@@ -1598,16 +1774,18 @@ public class HyperRingOverlay {
                 lastStatusPersist = now;
             }
 
-            // Continue loop only if springs are still in motion or media audio bars are animating
-            boolean mediaNeedsAnim = currentIsland == STATE_MEDIA && isMediaPlaying && !isCollapsing;
+            // Continue loop only if springs are still in motion or media audio bars / marquee / seekbar are animating
+            boolean mediaNeedsAnim = currentIsland == STATE_MEDIA && isMediaPlaying && !isCollapsing && ((!isExpanded && mediaShowWaveform) || isExpanded);
+            boolean marqueeNeedsAnim = isExpanded && currentIsland == STATE_MEDIA && mediaMarquee && !isCollapsing;
             boolean needNextFrame = anyMoving || mediaNeedsAnim;
 
             if (needNextFrame) {
                 if (mediaNeedsAnim && !anyMoving) {
-                    // Throttle audio bar updates to ~15fps via static field Runnable to eliminate GC sweeps
+                    // Throttle updates: ~30fps for expanded marquee, ~11fps for compact audio bars, 1fps for static seekbar
+                    int throttleDelay = marqueeNeedsAnim ? 33 : (isExpanded ? 1000 : 90);
                     if (handler != null) {
                         handler.removeCallbacks(audioThrottleRunnable);
-                        handler.postDelayed(audioThrottleRunnable, 67);
+                        handler.postDelayed(audioThrottleRunnable, throttleDelay);
                     }
                 } else {
                     if (handler != null) handler.removeCallbacks(audioThrottleRunnable);
@@ -2228,9 +2406,13 @@ public class HyperRingOverlay {
                                 }
                             }
 
-                            // Media Playback State Event Detection (targeted without AudioTrack false positives)
-                            if (enableMedia && (line.contains("MediaSession") || line.contains("PlaybackActivityMonitor"))) {
-                                queryMediaSessionNative();
+                            // Media Playback State Event Detection (targeted session events with 1500ms debounce)
+                            if (enableMedia && (line.contains("MediaSessionRecord") || line.contains("updatePlaybackState") || line.contains("dispatchMediaKeyEvent"))) {
+                                long nowTick = SystemClock.uptimeMillis();
+                                if (nowTick - lastMediaPoll > 1500) {
+                                    lastMediaPoll = nowTick;
+                                    queryMediaSessionNative();
+                                }
                             }
 
                             // Heads-Up Notification (HUN) banner alert detection & collision avoidance
@@ -2559,6 +2741,251 @@ public class HyperRingOverlay {
     }
 
     private static void queryMediaSessionNative() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            queryMediaSessionInternal();
+        } else if (backgroundHandler != null) {
+            backgroundHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    queryMediaSessionInternal();
+                }
+            });
+        }
+    }
+
+    private static void queryMediaSessionInternal() {
+        // High-fidelity Android Framework ISessionManager query (MediaController + High-Res Album Art + Seek/Duration)
+        try {
+            Class<?> smClass = Class.forName("android.os.ServiceManager");
+            Method getServiceMethod = smClass.getMethod("getService", String.class);
+            android.os.IBinder binder = (android.os.IBinder) getServiceMethod.invoke(null, "media_session");
+            if (binder != null) {
+                Class<?> stubClass = Class.forName("android.media.session.ISessionManager$Stub");
+                Method asInterfaceMethod = stubClass.getMethod("asInterface", android.os.IBinder.class);
+                Object ism = asInterfaceMethod.invoke(null, binder);
+                if (ism != null) {
+                    Method getSessionsMethod = ism.getClass().getMethod("getSessions", android.content.ComponentName.class, int.class);
+                    List<?> tokens = (List<?>) getSessionsMethod.invoke(ism, null, 0);
+                    if (tokens != null && !tokens.isEmpty()) {
+                        MediaController chosen = null;
+                        for (Object item : tokens) {
+                            if (item instanceof MediaSession.Token) {
+                                MediaController mc = new MediaController(context != null ? context : sysContext, (MediaSession.Token) item);
+                                PlaybackState ps = mc.getPlaybackState();
+                                if (ps != null && ps.getState() == PlaybackState.STATE_PLAYING) {
+                                    chosen = mc;
+                                    break;
+                                } else if (chosen == null) {
+                                    chosen = mc;
+                                }
+                            }
+                        }
+                        if (chosen != null) {
+                            processMediaController(chosen);
+                            return;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        // Fallback: dumpsys media_session
+        queryMediaSessionDumpsysFallback();
+    }
+
+    private static void processMediaController(MediaController mc) {
+        try {
+            activeMediaController = mc;
+            PlaybackState ps = mc.getPlaybackState();
+            boolean isPlaying = (ps != null && ps.getState() == PlaybackState.STATE_PLAYING);
+            long pos = (ps != null) ? ps.getPosition() : 0L;
+            long lastUpdate = (ps != null) ? ps.getLastPositionUpdateTime() : SystemClock.elapsedRealtime();
+
+            MediaMetadata md = mc.getMetadata();
+            String title = "";
+            String artist = "";
+            long duration = 0L;
+
+            if (md != null) {
+                title = md.getString(MediaMetadata.METADATA_KEY_TITLE);
+                if (title == null || title.isEmpty()) {
+                    title = md.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
+                }
+                artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST);
+                if (artist == null || artist.isEmpty()) {
+                    artist = md.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST);
+                }
+                duration = md.getLong(MediaMetadata.METADATA_KEY_DURATION);
+            }
+
+            if (title == null || title.trim().isEmpty()) {
+                title = "Unknown Track";
+            }
+            if (artist == null || artist.trim().isEmpty()) {
+                artist = "Media Playback";
+            }
+
+            mediaTrackPosition = pos;
+            mediaPositionUpdateTime = lastUpdate;
+            mediaTrackDuration = duration;
+
+            String artKey = mc.getPackageName() + ":" + title + ":" + artist;
+            boolean trackChanged = !artKey.equals(lastArtKey);
+
+            if (trackChanged) {
+                lastArtKey = artKey;
+                Bitmap rawArt = null;
+                if (md != null) {
+                    rawArt = md.getBitmap(MediaMetadata.METADATA_KEY_ART);
+                    if (rawArt == null) rawArt = md.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+                    if (rawArt == null) rawArt = md.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
+
+                    if (rawArt == null) {
+                        String uriStr = md.getString(MediaMetadata.METADATA_KEY_ART_URI);
+                        if (uriStr == null) uriStr = md.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI);
+                        if (uriStr != null && !uriStr.isEmpty()) {
+                            rawArt = decodeBitmapFromUri(uriStr);
+                        }
+                    }
+                }
+
+                if (rawArt != null && !rawArt.isRecycled()) {
+                    int pillSize = dpToPx(24);
+                    int cardSize = dpToPx(56);
+                    Bitmap newPill = Bitmap.createScaledBitmap(rawArt, pillSize, pillSize, true);
+                    Bitmap newCard = Bitmap.createScaledBitmap(rawArt, cardSize, cardSize, true);
+                    int dominant = extractDominantVibrantColor(rawArt);
+
+                    Bitmap oldPill = currentPillArt;
+                    Bitmap oldCard = currentCardArt;
+                    currentPillArt = newPill;
+                    currentCardArt = newCard;
+                    mediaDominantColor = dominant;
+
+                    if (oldPill != null && oldPill != newPill && !oldPill.isRecycled()) {
+                        oldPill.recycle();
+                    }
+                    if (oldCard != null && oldCard != newCard && !oldCard.isRecycled()) {
+                        oldCard.recycle();
+                    }
+                } else {
+                    if (currentPillArt != null && !currentPillArt.isRecycled()) {
+                        currentPillArt.recycle();
+                    }
+                    if (currentCardArt != null && !currentCardArt.isRecycled()) {
+                        currentCardArt.recycle();
+                    }
+                    currentPillArt = null;
+                    currentCardArt = null;
+                    mediaDominantColor = Color.parseColor("#38BDF8");
+                }
+            }
+
+            final boolean finalPlaying = isPlaying;
+            final String finalTitle = title;
+            final String finalArtist = artist;
+            final boolean finalTrackChanged = trackChanged;
+
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    boolean prevPlay = isMediaPlaying;
+                    isMediaPlaying = finalPlaying;
+                    mediaTitle = finalTitle;
+                    mediaArtist = finalArtist;
+
+                    if (isMediaPlaying != prevPlay) {
+                        if (isMediaPlaying && enableMedia) {
+                            if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                                showIsland(STATE_MEDIA, 0);
+                            }
+                        } else if (!isMediaPlaying) {
+                            if (currentIsland == STATE_MEDIA) {
+                                startCollapse();
+                            }
+                        }
+                    } else if (isMediaPlaying && enableMedia && currentIsland == STATE_IDLE && !isCollapsing) {
+                        if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                            showIsland(STATE_MEDIA, 0);
+                        }
+                    }
+
+                    if (finalTrackChanged && autoExpandMedia && isMediaPlaying && !isExpanded && !previewLock) {
+                        expandCard();
+                    }
+                    if (isMediaPlaying != prevPlay || finalTrackChanged || currentIsland == STATE_IDLE) {
+                        wakeEngineLoop();
+                    }
+                }
+            });
+        } catch (Throwable ignored) {}
+    }
+
+    private static Bitmap decodeBitmapFromUri(String uriStr) {
+        InputStream is = null;
+        try {
+            Uri uri = Uri.parse(uriStr);
+            if (context != null) {
+                is = context.getContentResolver().openInputStream(uri);
+                if (is != null) {
+                    return BitmapFactory.decodeStream(is);
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (is != null) {
+                try { is.close(); } catch (Throwable ignored) {}
+            }
+        }
+        return null;
+    }
+
+    private static int extractDominantVibrantColor(Bitmap bmp) {
+        if (bmp == null || bmp.isRecycled()) return Color.parseColor("#38BDF8");
+        Bitmap thumb = null;
+        try {
+            thumb = Bitmap.createScaledBitmap(bmp, 16, 16, false);
+            int[] pixels = new int[256];
+            thumb.getPixels(pixels, 0, 16, 0, 0, 16, 16);
+            if (thumb != bmp && !thumb.isRecycled()) {
+                thumb.recycle();
+                thumb = null;
+            }
+
+            float maxScore = -1f;
+            int bestColor = Color.parseColor("#38BDF8");
+            float[] hsv = new float[3];
+
+            for (int c : pixels) {
+                Color.colorToHSV(c, hsv);
+                float sat = hsv[1];
+                float val = hsv[2];
+                if (val < 0.20f || (val > 0.90f && sat < 0.15f) || sat < 0.20f) continue;
+                float score = (sat * 2.2f) + val;
+                if (score > maxScore) {
+                    maxScore = score;
+                    bestColor = c;
+                }
+            }
+            return bestColor;
+        } catch (Throwable t) {
+            return Color.parseColor("#38BDF8");
+        } finally {
+            if (thumb != null && thumb != bmp && !thumb.isRecycled()) {
+                thumb.recycle();
+            }
+        }
+    }
+
+    private static String formatTimeMs(long ms) {
+        if (ms < 0) ms = 0;
+        long totalSec = ms / 1000;
+        long m = totalSec / 60;
+        long s = totalSec % 60;
+        return String.format(Locale.US, "%d:%02d", m, s);
+    }
+
+    private static void queryMediaSessionDumpsysFallback() {
         try {
             java.lang.Process p = Runtime.getRuntime().exec(new String[]{"dumpsys", "media_session"});
             BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
@@ -2629,48 +3056,104 @@ public class HyperRingOverlay {
             reader.close();
             p.destroy();
 
-            boolean prevPlay = isMediaPlaying;
-            isMediaPlaying = foundPlaying;
+            final boolean finalFoundPlaying = foundPlaying;
+            final String finalPlayingTitle = playingTitle;
+            final String finalPlayingArtist = playingArtist;
 
-            if (foundPlaying) {
-                if (!playingTitle.isEmpty()) {
-                    mediaTitle = playingTitle;
-                }
-                if (!playingArtist.isEmpty()) {
-                    mediaArtist = playingArtist;
-                }
-            }
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    boolean prevPlay = isMediaPlaying;
+                    isMediaPlaying = finalFoundPlaying;
 
-            if (isMediaPlaying != prevPlay) {
-                if (isMediaPlaying && enableMedia) {
-                    if (!previewLock && currentIsland != STATE_CALIBRATION) {
-                        showIsland(STATE_MEDIA, 0);
+                    if (finalFoundPlaying) {
+                        if (!finalPlayingTitle.isEmpty()) {
+                            mediaTitle = finalPlayingTitle;
+                        }
+                        if (!finalPlayingArtist.isEmpty()) {
+                            mediaArtist = finalPlayingArtist;
+                        }
                     }
-                } else if (!isMediaPlaying) {
-                    if (currentIsland == STATE_MEDIA) {
-                        startCollapse();
+
+                    if (isMediaPlaying != prevPlay) {
+                        if (isMediaPlaying && enableMedia) {
+                            if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                                showIsland(STATE_MEDIA, 0);
+                            }
+                        } else if (!isMediaPlaying) {
+                            if (currentIsland == STATE_MEDIA) {
+                                startCollapse();
+                            }
+                        }
+                    } else if (isMediaPlaying && enableMedia && currentIsland == STATE_IDLE && !isCollapsing) {
+                        if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                            showIsland(STATE_MEDIA, 0);
+                        }
+                    }
+                    if (isMediaPlaying != prevPlay || currentIsland == STATE_IDLE) {
+                        wakeEngineLoop();
                     }
                 }
-            } else if (isMediaPlaying && enableMedia && currentIsland == STATE_IDLE && !isCollapsing) {
-                if (!previewLock && currentIsland != STATE_CALIBRATION) {
-                    showIsland(STATE_MEDIA, 0);
-                }
-            }
+            });
         } catch (Throwable ignored) {}
     }
 
+    private static void seekMediaTo(final long posMs) {
+        mediaTrackPosition = posMs;
+        mediaPositionUpdateTime = SystemClock.elapsedRealtime();
+        if (backgroundHandler != null) {
+            backgroundHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (activeMediaController != null) {
+                        try {
+                            activeMediaController.getTransportControls().seekTo(posMs);
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            });
+        }
+        wakeEngineLoop();
+    }
+
     private static void toggleMediaPlayback() {
+        if (activeMediaController != null) {
+            try {
+                if (isMediaPlaying) {
+                    activeMediaController.getTransportControls().pause();
+                } else {
+                    activeMediaController.getTransportControls().play();
+                }
+                isMediaPlaying = !isMediaPlaying;
+                wakeEngineLoop();
+                return;
+            } catch (Throwable ignored) {}
+        }
         dispatchKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
         isMediaPlaying = !isMediaPlaying;
         wakeEngineLoop();
     }
 
     private static void skipMediaNext() {
+        if (activeMediaController != null) {
+            try {
+                activeMediaController.getTransportControls().skipToNext();
+                wakeEngineLoop();
+                return;
+            } catch (Throwable ignored) {}
+        }
         dispatchKey(KeyEvent.KEYCODE_MEDIA_NEXT);
         wakeEngineLoop();
     }
 
     private static void skipMediaPrevious() {
+        if (activeMediaController != null) {
+            try {
+                activeMediaController.getTransportControls().skipToPrevious();
+                wakeEngineLoop();
+                return;
+            } catch (Throwable ignored) {}
+        }
         dispatchKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS);
         wakeEngineLoop();
     }
@@ -2919,13 +3402,9 @@ public class HyperRingOverlay {
                         currentIsland = STATE_MEDIA;
                         activeIslandType = STATE_MEDIA;
                     }
-                    isExpanded = true;
-                    prepareWindowForTarget();
-                    wakeEngineLoop();
+                    expandCard();
                 } else if ("collapse".equalsIgnoreCase(cmd)) {
-                    isExpanded = false;
-                    prepareWindowForTarget();
-                    wakeEngineLoop();
+                    collapseCard();
                 } else if ("idle".equalsIgnoreCase(cmd)) {
                     previewLock = false;
                     startCollapse();
@@ -2967,6 +3446,12 @@ public class HyperRingOverlay {
             pillAlignment       = parseStr(json, "pill_alignment", pillAlignment);
             notchMode           = parseBool(json, "notch_mode", notchMode);
             enableMedia         = parseBool(json, "enable_media", enableMedia);
+            mediaShowPillArt    = parseBool(json, "media_show_pill_art", mediaShowPillArt);
+            mediaArtStyle       = parseStr(json, "media_art_style", mediaArtStyle);
+            mediaShowWaveform   = parseBool(json, "media_show_waveform", mediaShowWaveform);
+            mediaAmbientGlow    = parseBool(json, "media_ambient_glow", mediaAmbientGlow);
+            mediaGlowOpacity    = parseInt(json, "media_glow_opacity", mediaGlowOpacity);
+            mediaMarquee        = parseBool(json, "media_marquee", mediaMarquee);
             enableCharging      = parseBool(json, "enable_charging", enableCharging);
             enableVolume        = parseBool(json, "enable_volume", enableVolume);
             enableRinger        = parseBool(json, "enable_ringer", enableRinger);

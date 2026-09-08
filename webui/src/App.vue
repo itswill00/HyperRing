@@ -721,6 +721,130 @@
           </div>
         </section>
 
+        <!-- HyperOS Media Experience -->
+        <div class="section-title">Media & playback</div>
+        <section class="md3-card" style="margin-bottom: 24px;">
+          <!-- Compact Album Art Toggle -->
+          <div class="md3-list-row" style="padding: 12px 0;" @click="toggleConfig('media_show_pill_art')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="circle" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Show album art in compact pill</div>
+                <div class="row-sub">Cover art thumbnail on the left wing</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.media_show_pill_art" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Pill Artwork Style Segmented Selector -->
+          <div class="preset-row" v-if="config.media_show_pill_art" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.06);">
+            <span class="row-meta-label">Pill artwork style</span>
+            <div class="segment-container">
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_art_style === 'rounded' }"
+                @click="config.media_art_style = 'rounded'; saveConfig();"
+              >
+                Rounded
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_art_style === 'squircle' }"
+                @click="config.media_art_style = 'squircle'; saveConfig();"
+              >
+                Squircle
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_art_style === 'circle' }"
+                @click="config.media_art_style = 'circle'; saveConfig();"
+              >
+                Circle
+              </button>
+            </div>
+          </div>
+
+          <!-- Waveform Visualizer Toggle -->
+          <div class="md3-list-row" style="padding: 12px 0; border-top: 1px solid rgba(255, 255, 255, 0.06);" @click="toggleConfig('media_show_waveform')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="wave" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Animated audio spectrum / waveform</div>
+                <div class="row-sub">Dynamic frequency equalizer bars</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.media_show_waveform" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Dynamic Ambient Glow Toggle -->
+          <div class="md3-list-row" style="padding: 12px 0; border-top: 1px solid rgba(255, 255, 255, 0.06);" @click="toggleConfig('media_ambient_glow')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="eye" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Dynamic ambient color glow</div>
+                <div class="row-sub">Radial gradient tinted by album art</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.media_ambient_glow" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Ambient Glow Opacity Slider -->
+          <div class="stepper-setting-block" v-if="config.media_ambient_glow" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.06);">
+            <div class="stepper-header">
+              <span class="stepper-title">Ambient glow opacity</span>
+              <span class="stepper-val">{{ config.media_glow_opacity }}%</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('media_glow_opacity', -5, 0, 50)">-</button>
+              <input
+                type="range"
+                min="0"
+                max="50"
+                step="5"
+                v-model.number="config.media_glow_opacity"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('media_glow_opacity', 5, 0, 50)">+</button>
+            </div>
+          </div>
+
+          <!-- Marquee Scrolling Toggle -->
+          <div class="md3-list-row" style="padding: 12px 0; margin-bottom: 0; border-top: 1px solid rgba(255, 255, 255, 0.06);" @click="toggleConfig('media_marquee')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="sliders" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Marquee scrolling for long titles</div>
+                <div class="row-sub">Smooth text marquee for long song names</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.media_marquee" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+        </section>
+
         <div class="section-title">Automations</div>
         <section class="md3-list-group">
           <!-- Auto-expand charging -->
@@ -987,6 +1111,12 @@ const config = reactive({
   card_y_offset: 0,
   card_position_mode: 'below',
   enable_media: true,
+  media_show_pill_art: true,
+  media_art_style: 'rounded',
+  media_show_waveform: true,
+  media_ambient_glow: true,
+  media_glow_opacity: 25,
+  media_marquee: true,
   enable_charging: true,
   enable_volume: true,
   enable_ringer: true,
