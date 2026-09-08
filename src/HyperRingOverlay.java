@@ -2213,11 +2213,18 @@ public class HyperRingOverlay {
     private static final Runnable audioThrottleRunnable = new Runnable() {
         @Override
         public void run() {
-            if (isLoopRunning && checkScreenInteractive()) {
-                Choreographer.getInstance().postFrameCallback(vsyncCallback);
-            } else {
+            if (!isLoopRunning || !checkScreenInteractive()) {
                 isLoopRunning = false;
+                return;
             }
+            boolean mediaNeedsAnim = currentIsland == STATE_MEDIA && isMediaPlaying && !isCollapsing
+                    && ((!isExpanded && mediaShowWaveform) || isExpanded);
+            if (!mediaNeedsAnim) {
+                isLoopRunning = false;
+                return;
+            }
+            // Drive the vsync tick directly via handler (no Choreographer), then re-schedule
+            Choreographer.getInstance().postFrameCallback(vsyncCallback);
         }
     };
 
