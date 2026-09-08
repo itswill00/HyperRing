@@ -118,7 +118,6 @@ public class HyperRingOverlay {
     private static volatile boolean isCollapsing = false;
     private static volatile boolean isExpanded = false;
     private static long calibrationEndTime = 0L;
-    private static int currentDisplayRotation = Surface.ROTATION_0;
 
     // Screen power lifecycle
     private static volatile boolean isScreenInteractive = true;
@@ -766,7 +765,8 @@ public class HyperRingOverlay {
             float pillRelX = getPillRelX(getWidth(), pillW);
             float pillRelY = getPillRelY(getHeight(), pillH);
 
-            boolean insidePill = (x >= pillRelX && x <= pillRelX + pillW && y >= pillRelY && y <= pillRelY + pillH);
+            float pad = dpToPx(12);
+            boolean insidePill = (x >= pillRelX - pad && x <= pillRelX + pillW + pad && y >= pillRelY - pad && y <= pillRelY + pillH + pad);
 
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
@@ -777,25 +777,19 @@ public class HyperRingOverlay {
 
                 case MotionEvent.ACTION_MOVE:
                     float dy = y - touchDownY;
-                    if (dy > dpToPx(20) && !isExpanded && currentIsland != STATE_IDLE && currentIsland != STATE_CALIBRATION) {
-                        isExpanded = true;
-                        if (handler != null) handler.removeCallbacks(autoCollapseRunnable);
-                        prepareWindowForTarget();
-                        wakeEngineLoop();
+                    if (dy > dpToPx(14) && !isExpanded && currentIsland != STATE_IDLE && currentIsland != STATE_CALIBRATION) {
+                        expandCard();
                         return true;
-                    } else if (dy < -dpToPx(20) && isExpanded) {
-                        isExpanded = false;
-                        prepareWindowForTarget();
-                        wakeEngineLoop();
+                    } else if (dy < -dpToPx(14) && isExpanded) {
+                        collapseCard();
                         return true;
                     }
                     return true;
 
                 case MotionEvent.ACTION_UP:
-                    if (!insidePill) return false;
                     float totalDistX = Math.abs(x - touchDownX);
                     float totalDistY = Math.abs(y - touchDownY);
-                    if (totalDistX < dpToPx(14) && totalDistY < dpToPx(14)) {
+                    if (totalDistX < dpToPx(24) && totalDistY < dpToPx(24)) {
                         handleTap(x - pillRelX, y - pillRelY);
                     }
                     return true;
@@ -822,24 +816,46 @@ public class HyperRingOverlay {
         }
     }
 
+    private static void expandCard() {
+        if (isExpanded) return;
+        isExpanded = true;
+        if (handler != null) {
+            handler.removeCallbacks(autoCollapseRunnable);
+            if (expandTimeoutMs > 0 && !previewLock) {
+                handler.postDelayed(autoCollapseRunnable, Math.max(6000, expandTimeoutMs));
+            }
+        }
+        resolveTargetState(SystemClock.uptimeMillis());
+        prepareWindowForTarget();
+        wakeEngineLoop();
+    }
+
+    private static void collapseCard() {
+        if (!isExpanded) return;
+        isExpanded = false;
+        if (handler != null) {
+            handler.removeCallbacks(autoCollapseRunnable);
+        }
+        resolveTargetState(SystemClock.uptimeMillis());
+        prepareWindowForTarget();
+        wakeEngineLoop();
+    }
+
     private static void handleTap(float x, float y) {
         if (!isExpanded) {
             if (currentIsland != STATE_IDLE && currentIsland != STATE_CALIBRATION) {
-                isExpanded = true;
-                if (handler != null) handler.removeCallbacks(autoCollapseRunnable);
-                prepareWindowForTarget();
-                wakeEngineLoop();
+                expandCard();
             }
         } else {
             float viewW = springW.current;
             float viewH = springH.current;
 
             if (currentIsland == STATE_MEDIA) {
-                float btnY = viewH - dpToPx(22);
+                float btnY = viewH - dpToPx(20);
                 float centerX = viewW / 2.0f;
                 float prevBtnX = centerX - dpToPx(65);
                 float nextBtnX = centerX + dpToPx(65);
-                float hitRadius = dpToPx(26);
+                float hitRadius = dpToPx(28);
 
                 if (Math.abs(y - btnY) < hitRadius) {
                     if (Math.abs(x - centerX) < hitRadius) {
@@ -854,14 +870,12 @@ public class HyperRingOverlay {
                     }
                 }
             } else if (currentIsland == STATE_TORCH) {
-                isExpanded = false;
-                prepareWindowForTarget();
+                collapseCard();
                 startCollapse();
                 return;
+            } else {
+                collapseCard();
             }
-            isExpanded = false;
-            prepareWindowForTarget();
-            wakeEngineLoop();
         }
     }
 
@@ -1532,11 +1546,30 @@ public class HyperRingOverlay {
         }
     };
 
+    private static boolean isLandscape() {
+        try {
+            if (defaultDisplay != null) {
+                int rot = defaultDisplay.getRotation();
+                if (rot == Surface.ROTATION_90 || rot == Surface.ROTATION_270) {
+                    return true;
+                }
+                DisplayMetrics dm = new DisplayMetrics();
+                defaultDisplay.getRealMetrics(dm);
+                if (dm.widthPixels > dm.heightPixels) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
     public static void showIsland(final int state, final long timeoutMs) {
         if (!masterEnabled && state != STATE_CALIBRATION) return;
+        if (hideInLandscape && isLandscape() && state != STATE_CALIBRATION) return;
         Runnable r = new Runnable() {
             @Override
             public void run() {
+                if (hideInLandscape && isLandscape() && state != STATE_CALIBRATION) return;
                 currentIsland = state;
                 activeIslandType = state;
                 isCollapsing = false;
@@ -1616,12 +1649,14 @@ public class HyperRingOverlay {
         handler.post(new Runnable() {
             @Override
             public void run() {
-                if (!isLoopRunning && checkScreenInteractive()) {
-                    isLoopRunning = true;
+                if (checkScreenInteractive()) {
                     lastFrameNanos = System.nanoTime();
-                    // Before animation starts, ensure window params accommodate the target state
+                    resolveTargetState(SystemClock.uptimeMillis());
                     prepareWindowForTarget();
-                    Choreographer.getInstance().postFrameCallback(vsyncCallback);
+                    if (!isLoopRunning) {
+                        isLoopRunning = true;
+                        Choreographer.getInstance().postFrameCallback(vsyncCallback);
+                    }
                 }
             }
         });
@@ -1629,15 +1664,10 @@ public class HyperRingOverlay {
 
     private static void checkDisplayOrientation() {
         if (defaultDisplay == null || ringView == null) return;
-        int rot = defaultDisplay.getRotation();
-        if (rot != currentDisplayRotation) {
-            currentDisplayRotation = rot;
-            if (hideInLandscape && currentDisplayRotation != Surface.ROTATION_0) {
+        if (hideInLandscape && isLandscape()) {
+            if (ringView.getVisibility() != View.GONE) {
                 ringView.setVisibility(View.GONE);
-            } else {
-                if (currentIsland != STATE_IDLE || stealthRingIdle) {
-                    ringView.setVisibility(View.VISIBLE);
-                }
+                if (isExpanded) isExpanded = false;
             }
         }
     }
@@ -1740,6 +1770,13 @@ public class HyperRingOverlay {
      */
     private static void prepareWindowForTarget() {
         if (params == null || windowManager == null || ringView == null) return;
+
+        if (hideInLandscape && isLandscape() && currentIsland != STATE_CALIBRATION) {
+            if (ringView.getVisibility() != View.GONE) {
+                ringView.setVisibility(View.GONE);
+            }
+            return;
+        }
 
         float effCutoutX = cutoutCenterX + xOffset;
         float effCutoutY = cutoutCenterY + yOffset;
@@ -1916,6 +1953,31 @@ public class HyperRingOverlay {
                     }
                     if (enableHyperCore && isCharging) {
                         readHyperCoreStatusNative();
+                    }
+
+                    // Landscape guard check
+                    if (hideInLandscape && currentIsland != STATE_CALIBRATION) {
+                        boolean land = isLandscape();
+                        if (land && ringView != null && ringView.getVisibility() == View.VISIBLE) {
+                            handler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (ringView != null) ringView.setVisibility(View.GONE);
+                                    if (isExpanded) isExpanded = false;
+                                }
+                            });
+                            return;
+                        } else if (!land && ringView != null && ringView.getVisibility() != View.VISIBLE && currentIsland != STATE_IDLE && masterEnabled) {
+                            handler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    resolveTargetState(SystemClock.uptimeMillis());
+                                    prepareWindowForTarget();
+                                    if (ringView != null) ringView.setVisibility(View.VISIBLE);
+                                    wakeEngineLoop();
+                                }
+                            });
+                        }
                     }
 
                     // Auto state transitions (priority-based)
