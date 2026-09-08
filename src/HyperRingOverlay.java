@@ -852,12 +852,21 @@ public class HyperRingOverlay {
             invalidateOutline();
             float pillW = springW.current;
             float pillH = springH.current;
+
+            // Micro-squash & stretch effect: fluid volume conservation based on horizontal spring velocity
+            float velX = springW.velocity;
+            float hSquash = 0f;
+            if (Math.abs(velX) > 120f) {
+                hSquash = Math.max(-dpToPx(2.0f), Math.min(dpToPx(3.5f), (velX / 1400f) * dpToPx(3.0f)));
+            }
+            float effH = Math.max(cutoutRadius * 2.0f, pillH - hSquash);
+
             float pillRelX = getPillRelX(getWidth(), pillW);
-            float pillRelY = getPillRelY(getHeight(), pillH);
+            float pillRelY = getPillRelY(getHeight(), effH);
 
             canvas.save();
             canvas.translate(pillRelX, pillRelY);
-            renderIsland(canvas, pillW, pillH);
+            renderIsland(canvas, pillW, effH);
             canvas.restore();
         }
     }
@@ -871,6 +880,13 @@ public class HyperRingOverlay {
                 handler.postDelayed(autoCollapseRunnable, Math.max(6000, expandTimeoutMs));
             }
         }
+        // Asymmetric Open Curve: natural elasticity & organic overshoot (approx (0.16, 1, 0.3, 1))
+        if (springW != null) {
+            springW.setParameters(360f, 0.76f);
+            springH.setParameters(340f, 0.75f);
+            springR.setParameters(380f, 0.78f);
+            springContentAlpha.setParameters(420f, 0.88f);
+        }
         resolveTargetState(SystemClock.uptimeMillis());
         prepareWindowForTarget();
         wakeEngineLoop();
@@ -881,6 +897,13 @@ public class HyperRingOverlay {
         isExpanded = false;
         if (handler != null) {
             handler.removeCallbacks(autoCollapseRunnable);
+        }
+        // Asymmetric Close Curve: snappier suction effect (220-260ms duration)
+        if (springW != null) {
+            springW.setParameters(520f, 0.94f);
+            springH.setParameters(540f, 0.95f);
+            springR.setParameters(540f, 0.96f);
+            springContentAlpha.setParameters(650f, 1.0f);
         }
         resolveTargetState(SystemClock.uptimeMillis());
         prepareWindowForTarget();
@@ -980,19 +1003,33 @@ public class HyperRingOverlay {
 
             float compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
             float targetCardH = getDefaultCardHeight(currentIsland);
-            float expansionProgress = isExpanded
-                    ? Math.max(0.0f, Math.min(1.0f, (h - compactH) / Math.max(1.0f, targetCardH - compactH)))
-                    : 0.0f;
+            float progress = Math.max(0.0f, Math.min(1.0f, (h - compactH) / Math.max(1.0f, targetCardH - compactH)));
 
-            if (expansionProgress > 0.40f) {
-                // Phase 2: Card expansion exceeded 40% threshold - fade in expanded rich metadata and controls
-                float expandedAlpha = (expansionProgress - 0.40f) / 0.60f;
-                renderExpandedContent(canvas, w, h, contentAlpha * expandedAlpha);
+            if (isExpanded) {
+                // EXPANDING PHASE:
+                if (progress > 0.40f) {
+                    // FastOutSlowIn cubic-bezier curve approximation: (0.4, 0, 0.2, 1) -> t * t * (3 - 2t)
+                    float t = (progress - 0.40f) / 0.60f;
+                    float fastOutSlow = t * t * (3.0f - 2.0f * t);
+                    renderExpandedContent(canvas, w, h, contentAlpha * fastOutSlow);
+                } else {
+                    // Smoothly cross-fade out compact content as pill expands
+                    float compactFade = Math.max(0.0f, 1.0f - (progress / 0.40f));
+                    if (compactFade > 0.02f) {
+                        renderCompactContent(canvas, w, h, contentAlpha * compactFade);
+                    }
+                }
             } else {
-                // Phase 1: Pill morphing / initial expansion - render compact content fading out as pill expands
-                float compactFade = Math.max(0.0f, 1.0f - (expansionProgress / 0.40f));
-                if (compactFade > 0.02f) {
-                    renderCompactContent(canvas, w, h, contentAlpha * compactFade);
+                // COLLAPSING PHASE:
+                // Instantly fade out internal children views (1.0 -> 0.0) within the first 28% of collapse
+                // Shape bounds animate as pure OLED silhouette for the remainder of the shrink (anti-clipping)
+                if (progress > 0.72f) {
+                    float collapseAlpha = (progress - 0.72f) / 0.28f;
+                    renderExpandedContent(canvas, w, h, contentAlpha * collapseAlpha);
+                } else if (progress < 0.20f && !isCollapsing) {
+                    // Compact content re-emerges smoothly as pill finishes settling into target
+                    float pillFade = (0.20f - progress) / 0.20f;
+                    renderCompactContent(canvas, w, h, contentAlpha * pillFade);
                 }
             }
 
@@ -1579,6 +1616,9 @@ public class HyperRingOverlay {
             } else {
                 isLoopRunning = false;
                 if (handler != null) handler.removeCallbacks(audioThrottleRunnable);
+                if (ringView != null && ringView.getLayerType() != View.LAYER_TYPE_NONE) {
+                    ringView.setLayerType(View.LAYER_TYPE_NONE, null);
+                }
                 if (isCollapsing) {
                     onAnimationSettled();
                 }
@@ -1740,11 +1780,11 @@ public class HyperRingOverlay {
                     springR.setTarget(cutoutRadius);
                     springContentAlpha.setTarget(0.0f);
 
-                    // Snappy critically-damped collapse (alpha fades fast ~120ms, pill smoothly shrinks ~200ms)
-                    springContentAlpha.setParameters(520f, 1.05f);
-                    springW.setParameters(480f, 0.98f);
-                    springH.setParameters(480f, 0.98f);
-                    springR.setParameters(480f, 0.98f);
+                    // Snappy suction collapse into camera cutout (~220ms, critically damped with zero overshoot)
+                    springContentAlpha.setParameters(680f, 1.05f);
+                    springW.setParameters(520f, 0.96f);
+                    springH.setParameters(540f, 0.96f);
+                    springR.setParameters(540f, 0.98f);
                 }
 
                 if (checkScreenInteractive()) {
@@ -1773,6 +1813,9 @@ public class HyperRingOverlay {
                     lastFrameNanos = System.nanoTime();
                     resolveTargetState(SystemClock.uptimeMillis());
                     prepareWindowForTarget();
+                    if (ringView != null && ringView.getLayerType() != View.LAYER_TYPE_HARDWARE) {
+                        ringView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+                    }
                     isLoopRunning = true;
                     Choreographer.getInstance().removeFrameCallback(vsyncCallback);
                     Choreographer.getInstance().postFrameCallback(vsyncCallback);
@@ -2008,6 +2051,9 @@ public class HyperRingOverlay {
      */
     private static void onAnimationSettled() {
         if (params == null || windowManager == null || ringView == null) return;
+        if (ringView.getLayerType() != View.LAYER_TYPE_NONE) {
+            ringView.setLayerType(View.LAYER_TYPE_NONE, null);
+        }
 
         if (isCollapsing || currentIsland == STATE_IDLE) {
             isCollapsing = false;
