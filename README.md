@@ -1,64 +1,120 @@
 # HyperRing
 
-Physics-driven dynamic punch-hole status pill and interactive floating card for rooted Android devices.
+Physics-driven dynamic punch-hole status pill and interactive overlay for rooted Android devices.
 
-## Architecture
+HyperRing transforms the front-facing camera cutout into an expressive, contextual island. Built as a native Android DEX process running under `app_process`, it interacts directly with `WindowManager` without requiring accessibility services or background application overhead.
 
-- **Harmonic Spring Physics**: Employs an RK4-style numerical spring solver (stiffness ~360, damping ratio ~0.76) for elastic overshoot, momentum conservation, and fluid settling.
-- **Hardware Cutout Anchoring**: Origin transformation coordinates are locked to the physical camera lens center. The background uses true black (#000000) with continuous squircle geometry for seamless hardware blending.
-- **Native Window Injection**: Runs as a lightweight process under `app_process` attached directly to the WindowManager (`TYPE_APPLICATION_OVERLAY`), completely bypassing Accessibility Services.
-- **Ecosystem Integration**:
-  - **HyperDL**: Circular progress indicator and transfer rate telemetry.
-  - **HyperCore**: Charging power metrics (wattage, current) and active kernel profile name.
-  - **Media Session**: Realtime audio spectrum bars and playback controls (play, pause, next, previous).
-- **Single-File WebUI**: Visual cutout calibration, physics tuning, and event triggers available inside KernelSU, APatch, and MMRL.
+## Highlights
 
-## State Model
+- **Natural spring dynamics**: Runge-Kutta 4th-order (RK4) numerical integrator driving 6 independent spatial springs (position, dimension, corner radius, content alpha) at full display refresh rate (up to 120 Hz).
+- **Zero background overhead**: Hardware Choreographer loop automatically halts when animations settle, consuming 0.0% CPU during idle and steady-state display.
+- **Zero-jitter layout**: Window dimensions preallocate target bounding boxes before spring motion initiates, eliminating Android IPC window resizing jumps.
+- **Pure OLED design**: Deep `#000000` surface matching physical display cutouts, subtle specular ambient border, and strictly minimal human typography.
+- **Root-level system listeners**: Native background monitoring for battery telemetry, media sessions, volume steps, ringer mode changes, and notification enqueues.
+- **Stand-alone WebUI**: Single-file Vue 3 configuration interface accessible directly within KernelSU, APatch, and MMRL with dark mode and safe-area inset protection.
 
-| State | Trigger | Compact Representation | Expanded Representation |
+## Contextual States
+
+| State | Trigger | Compact Pill | Expanded Card |
 | :--- | :--- | :--- | :--- |
-| **Idle** | Default | Transparent circle over camera cutout | None |
-| **Charging** | Power connected | Vector bolt and battery percentage | Charging wattage, current, and active kernel profile |
-| **HyperDL** | Active download | Progress dot and download speed | Filename, progress bar, and speed |
-| **Media** | Playback active | Disc icon and audio visualizer bars | Track title, artist, seekbar, and playback controls |
+| **Idle** | Screen awake, no active alerts | Stealth ring around camera cutout | None (transparent, touch pass-through) |
+| **Charging** | Power connected | Fast charge indicator and percentage | Battery level, charging power, current, temperature |
+| **Media** | Audio playback active | Disc glyph and animated audio visualizer | Track title, artist, seekbar, playback controls |
+| **Volume** | Hardware volume rocker | Speaker glyph and volume level | Volume slider and current audio stream |
+| **Ringer** | Sound profile change | Sound / vibrate / silent glyph | Active sound mode status |
+| **Notification** | App notification arrival | App icon glyph and sender name | Message preview and dismissal action |
+| **Torch** | Flashlight toggled | Torch glyph and status | Flashlight quick-toggle button |
+| **HyperDL** | Active background download | Progress dot and transfer speed | File transfer name, progress track, transfer rate |
+| **Calibration** | Position tuning | Alignment reticle and target ring | Live coordinate adjustment overlay |
 
-## Command-Line Triggers
+## Project Structure
 
-Simulate events or control states directly:
+```
+HyperRing/
+├── action.sh             # Magisk/KernelSU action trigger & daemon launcher
+├── service.sh            # Boot completion background service daemon
+├── customize.sh          # Module installation script
+├── uninstall.sh          # Module removal script
+├── module.prop           # Module metadata
+├── build.sh              # Standalone compilation and packaging script
+├── src/
+│   └── HyperRingOverlay.java   # Native Java overlay engine & window manager
+├── state/
+│   ├── config.json       # User cutout coordinates & feature preferences
+│   └── status.json       # Live telemetry and daemon runtime state
+├── webroot/
+│   └── index.html        # Bundled single-file WebUI
+└── webui/                # Vue 3 source code for KernelSU/MMRL WebUI
+```
+
+## Configuration
+
+Settings are stored in `state/config.json`:
+
+```json
+{
+  "cutout_x": 540,
+  "cutout_y": 52,
+  "cutout_radius": 36,
+  "enable_media": true,
+  "enable_charging": true,
+  "enable_volume": true,
+  "enable_notifications": true,
+  "enable_hyperdl": true,
+  "enable_hypercore": true,
+  "spring_stiffness": 380.0,
+  "spring_damping": 0.78,
+  "auto_expand_charging": true,
+  "expand_timeout_ms": 3500
+}
+```
+
+## CLI Controls
+
+HyperRing responds instantly to commands written via `action.sh`:
 
 ```bash
-# Simulate charging event
+# Trigger charging card
 su -c "/data/adb/modules/hyperring/action.sh charge"
 
-# Simulate media playback
+# Trigger media card
 su -c "/data/adb/modules/hyperring/action.sh media"
 
-# Expand island into full card
-su -c "/data/adb/modules/hyperring/action.sh expand"
+# Trigger volume pill
+su -c "/data/adb/modules/hyperring/action.sh volume"
 
-# Collapse island into compact pill
+# Toggle expand / collapse
+su -c "/data/adb/modules/hyperring/action.sh expand"
 su -c "/data/adb/modules/hyperring/action.sh collapse"
 
-# Return to idle state
+# Return to idle
 su -c "/data/adb/modules/hyperring/action.sh idle"
 ```
 
-## Build and Deployment
+## Building
+
+The build system is entirely self-contained. It can compile from source or package existing pre-compiled binaries:
 
 ```bash
-# Build WebUI, DEX, and package zip:
+# Compile DEX, build WebUI, and generate flashable ZIP:
 ./build.sh
 
-# Build and deploy immediately to active device:
+# Compile and deploy live to connected rooted device:
 ./build.sh --deploy
 
-# Deploy existing build without recompiling:
+# Deploy existing compiled files without rebuilding:
 ./build.sh --deploy-only
 
 # Clean build artifacts:
 ./build.sh --clean
 ```
 
-## License
+## Requirements
 
-Maintained by @itswill00.
+- Android 10+ (API level 29+)
+- Root access via KernelSU, APatch, or Magisk
+- Display with camera punch-hole cutout (center, left, or right aligned)
+
+## Author
+
+Maintained by [@itswill00](https://github.com/itswill00).

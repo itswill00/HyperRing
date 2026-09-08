@@ -15,6 +15,7 @@ import android.hardware.camera2.CameraManager;
 import android.hardware.display.DisplayManager;
 import android.media.AudioManager;
 import android.os.BatteryManager;
+import android.os.FileObserver;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -22,6 +23,7 @@ import android.util.DisplayMetrics;
 import android.view.Choreographer;
 import android.view.Display;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.View;
@@ -52,6 +54,7 @@ public class HyperRingOverlay {
     private static WindowManager.LayoutParams params;
     private static Handler handler;
     private static ScheduledExecutorService workerPool;
+    private static FileObserver stateObserver;
 
     // Filesystem paths
     private static String stateDir    = "/data/adb/modules/hyperring/state";
@@ -60,14 +63,14 @@ public class HyperRingOverlay {
     private static String triggerPath = stateDir + "/trigger.cmd";
 
     // Display specifications
-    private static int displayWidthPx  = 1080;
-    private static int displayHeightPx = 2400;
+    private static int displayWidthPx   = 1080;
+    private static int displayHeightPx  = 2400;
     private static float displayDensity = 2.75f;
 
     // Geometry configuration
-    private static int cutoutCenterX = 540;
-    private static int cutoutCenterY = 52;
-    private static int cutoutRadius  = 36;
+    private static int cutoutCenterX           = 540;
+    private static int cutoutCenterY           = 52;
+    private static int cutoutRadius            = 36;
     private static boolean enableMedia         = true;
     private static boolean enableCharging      = true;
     private static boolean enableVolume        = true;
@@ -81,18 +84,6 @@ public class HyperRingOverlay {
     private static float springDamping         = 0.78f;
     private static boolean autoExpandCharging  = true;
     private static int expandTimeoutMs         = 3500;
-    private static long lastConfigModified     = 0L;
-
-
-    // 2-Stage window bounds optimization
-    private static float animBoundingX = 0f;
-    private static float animBoundingY = 0f;
-    private static float animBoundingW = 0f;
-    private static float animBoundingH = 0f;
-    private static float lastTargetX = -9999f;
-    private static float lastTargetY = -9999f;
-    private static float lastTargetW = -9999f;
-    private static float lastTargetH = -9999f;
 
     // Island states
     public static final int STATE_IDLE         = 0;
@@ -113,6 +104,9 @@ public class HyperRingOverlay {
 
     // Screen power lifecycle
     private static volatile boolean isScreenInteractive = true;
+
+    // Engine loop lifecycle (Zero-overhead sleep when settled)
+    private static volatile boolean isLoopRunning = false;
 
     // Telemetry: Battery & Power
     private static volatile int batteryPct = 100;
@@ -179,7 +173,6 @@ public class HyperRingOverlay {
         }
 
         public boolean update(float dt) {
-            // RK4 integration step
             float p1 = current;
             float v1 = velocity;
             float a1 = getAcceleration(p1, v1);
@@ -202,7 +195,7 @@ public class HyperRingOverlay {
             current += dpos;
             velocity += dvel;
 
-            if (Math.abs(velocity) < 0.05f && Math.abs(current - target) < 0.05f) {
+            if (Math.abs(velocity) < 0.04f && Math.abs(current - target) < 0.04f) {
                 current = target;
                 velocity = 0f;
                 return false;
@@ -211,7 +204,7 @@ public class HyperRingOverlay {
         }
 
         public boolean isMoving() {
-            return Math.abs(velocity) > 0.05f || Math.abs(current - target) > 0.05f;
+            return Math.abs(velocity) > 0.04f || Math.abs(current - target) > 0.04f;
         }
     }
 
@@ -222,15 +215,6 @@ public class HyperRingOverlay {
     private static Spring springH;
     private static Spring springR;
     private static Spring springContentAlpha;
-
-    private static boolean isAnySpringMoving() {
-        return (springX != null && springX.isMoving())
-                || (springY != null && springY.isMoving())
-                || (springW != null && springW.isMoving())
-                || (springH != null && springH.isMoving())
-                || (springR != null && springR.isMoving())
-                || (springContentAlpha != null && springContentAlpha.isMoving());
-    }
 
     // Visualizer simulation bars
     private static float[] barHeights = new float[]{0.3f, 0.7f, 0.5f, 0.9f};
@@ -323,13 +307,14 @@ public class HyperRingOverlay {
         initGraphics();
         registerSystemReceivers();
         startBackgroundWorkers();
+        initStateFileObserver();
 
         handler.post(new Runnable() {
             @Override
             public void run() {
                 try {
                     attachWindow();
-                    startEngineLoop();
+                    wakeEngineLoop();
                 } catch (Throwable t) {
                     System.err.println("Window mount failed: " + t.getMessage());
                 }
@@ -519,6 +504,7 @@ public class HyperRingOverlay {
                         triggerChargingEvent();
                     } else if (chargingNow && isCharging) {
                         readBatteryHardwareTelemetry();
+                        if (currentIsland == STATE_CHARGING) wakeEngineLoop();
                     } else if (!chargingNow) {
                         isCharging = false;
                         if (currentIsland == STATE_CHARGING) {
@@ -530,6 +516,7 @@ public class HyperRingOverlay {
                                 currentIsland = STATE_IDLE;
                             }
                             isExpanded = false;
+                            wakeEngineLoop();
                         }
                     }
                 }
@@ -549,9 +536,10 @@ public class HyperRingOverlay {
                         AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
                         int max = am != null ? am.getStreamMaxVolume(stream) : 15;
                         volumePercent = Math.round((val / (float) Math.max(1, max)) * 100f);
-                                                currentIsland = STATE_VOLUME;
+                        currentIsland = STATE_VOLUME;
                         isExpanded = false;
                         expandCollapseTime = SystemClock.uptimeMillis() + 1800;
+                        wakeEngineLoop();
                     }
                 }
             }, volFilter);
@@ -566,13 +554,14 @@ public class HyperRingOverlay {
                     if (intent == null || !enableRinger) return;
                     int mode = intent.getIntExtra(AudioManager.EXTRA_RINGER_MODE, -1);
                     if (mode >= 0) {
-                                                if (mode == AudioManager.RINGER_MODE_SILENT) ringerLabel = "Silent";
+                        if (mode == AudioManager.RINGER_MODE_SILENT) ringerLabel = "Silent";
                         else if (mode == AudioManager.RINGER_MODE_VIBRATE) ringerLabel = "Vibrate";
                         else ringerLabel = "Ring";
 
                         currentIsland = STATE_RINGER;
                         isExpanded = false;
                         expandCollapseTime = SystemClock.uptimeMillis() + 2200;
+                        wakeEngineLoop();
                     }
                 }
             }, ringerFilter);
@@ -589,8 +578,10 @@ public class HyperRingOverlay {
                             currentIsland = STATE_TORCH;
                             isExpanded = false;
                             expandCollapseTime = SystemClock.uptimeMillis() + 2600;
+                            wakeEngineLoop();
                         } else if (currentIsland == STATE_TORCH) {
                             currentIsland = STATE_IDLE;
+                            wakeEngineLoop();
                         }
                     }
                 }, handler);
@@ -613,6 +604,7 @@ public class HyperRingOverlay {
                     } else if (Intent.ACTION_SCREEN_ON.equals(act) || Intent.ACTION_USER_PRESENT.equals(act)) {
                         isScreenInteractive = true;
                         lastFrameNanos = System.nanoTime();
+                        wakeEngineLoop();
                     }
                 }
             }, screenFilter);
@@ -628,6 +620,38 @@ public class HyperRingOverlay {
             isExpanded = false;
             expandCollapseTime = SystemClock.uptimeMillis() + 4500;
         }
+        wakeEngineLoop();
+    }
+
+    private static void initStateFileObserver() {
+        try {
+            File dir = new File(stateDir);
+            if (!dir.exists()) dir.mkdirs();
+
+            stateObserver = new FileObserver(stateDir, FileObserver.CLOSE_WRITE | FileObserver.MOVED_TO | FileObserver.CREATE) {
+                @Override
+                public void onEvent(int event, String path) {
+                    if (path == null) return;
+                    if ("trigger.cmd".equalsIgnoreCase(path)) {
+                        handler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                processTriggerCmd();
+                            }
+                        });
+                    } else if ("config.json".equalsIgnoreCase(path)) {
+                        handler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                readConfig();
+                                wakeEngineLoop();
+                            }
+                        });
+                    }
+                }
+            };
+            stateObserver.startWatching();
+        } catch (Throwable ignored) {}
     }
 
     private static void attachWindow() {
@@ -704,9 +728,11 @@ public class HyperRingOverlay {
                     if (dy > dpToPx(20) && !isExpanded && currentIsland != STATE_IDLE && currentIsland != STATE_CALIBRATION) {
                         isExpanded = true;
                         expandCollapseTime = 0L;
+                        wakeEngineLoop();
                         return true;
                     } else if (dy < -dpToPx(20) && isExpanded) {
                         isExpanded = false;
+                        wakeEngineLoop();
                         return true;
                     }
                     return true;
@@ -747,6 +773,7 @@ public class HyperRingOverlay {
             if (currentIsland != STATE_IDLE && currentIsland != STATE_CALIBRATION) {
                 isExpanded = true;
                 expandCollapseTime = 0L;
+                wakeEngineLoop();
             }
         } else {
             float viewW = springW.current;
@@ -776,6 +803,7 @@ public class HyperRingOverlay {
                 return;
             }
             isExpanded = false;
+            wakeEngineLoop();
         }
     }
 
@@ -849,12 +877,14 @@ public class HyperRingOverlay {
 
         if (currentIsland == STATE_CHARGING) {
             paintAccentGreen.setAlpha(intAlpha);
-            drawBoltIcon(canvas, iconCenterX, centerY, dpToPx(11), paintAccentGreen);
+            drawBoltIcon(canvas, iconCenterX, centerY, dpToPx(12), paintAccentGreen);
 
-            paintTextPrimary.setTextSize(spToPx(12f));
+            paintTextPrimary.setTextSize(spToPx(12.5f));
             paintTextPrimary.setTextAlign(textAlign);
+            paintTextPrimary.setColor(Color.parseColor("#34D399"));
             paintTextPrimary.setAlpha(intAlpha);
-            canvas.drawText(batteryPct + "%", textCenterX, centerY + dpToPx(4), paintTextPrimary);
+            canvas.drawText(batteryPct + "%", textCenterX, centerY + dpToPx(4.5f), paintTextPrimary);
+            paintTextPrimary.setColor(Color.WHITE);
 
         } else if (currentIsland == STATE_MEDIA) {
             paintAccentCyan.setAlpha(intAlpha);
@@ -932,62 +962,37 @@ public class HyperRingOverlay {
         paintTextTertiary.setAlpha(Math.min(255, (int) (alpha * 95)));
         paintIconFill.setAlpha(intAlpha);
 
-        float holeRelX = cutoutCenterX - springX.current;
         float holeRelY = cutoutCenterY - springY.current;
         float holeR = cutoutRadius;
         boolean isCutoutCenter = Math.abs(cutoutCenterX - (displayWidthPx / 2.0f)) < (displayWidthPx * 0.15f);
-        boolean isCutoutLeft = cutoutCenterX < displayWidthPx * 0.35f;
 
         if (currentIsland == STATE_CHARGING) {
-            float holeTopRowY = Math.max(dpToPx(18), holeRelY);
-
-            if (isCutoutLeft) {
-                float startX = holeRelX + holeR + dpToPx(12);
-                paintAccentGreen.setAlpha(intAlpha);
-                drawBoltIcon(canvas, startX + dpToPx(8), holeTopRowY, dpToPx(14), paintAccentGreen);
-
-                paintTextPrimary.setTextSize(spToPx(13.5f));
-                paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-                canvas.drawText("Super Charge", startX + dpToPx(24), holeTopRowY + dpToPx(5), paintTextPrimary);
-
-                paintTextPrimary.setTextSize(spToPx(17));
-                paintTextPrimary.setColor(Color.parseColor("#34D399"));
-                paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
-                canvas.drawText(batteryPct + "%", curW - dpToPx(20), holeTopRowY + dpToPx(6), paintTextPrimary);
-                paintTextPrimary.setColor(Color.WHITE);
-
-            } else if (!isCutoutCenter) {
-                float endX = holeRelX - holeR - dpToPx(12);
-                paintAccentGreen.setAlpha(intAlpha);
-                drawBoltIcon(canvas, dpToPx(22), holeTopRowY, dpToPx(14), paintAccentGreen);
-
-                paintTextPrimary.setTextSize(spToPx(13.5f));
-                paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-                canvas.drawText("Super Charge", dpToPx(38), holeTopRowY + dpToPx(5), paintTextPrimary);
-
-                paintTextPrimary.setTextSize(spToPx(17));
-                paintTextPrimary.setColor(Color.parseColor("#34D399"));
-                paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
-                canvas.drawText(batteryPct + "%", endX, holeTopRowY + dpToPx(6), paintTextPrimary);
-                paintTextPrimary.setColor(Color.WHITE);
-
+            // Elegant Native Layout: Safely clear of camera punch-hole
+            float topY;
+            if (isCutoutCenter) {
+                // Sits with clean breathing room below the punch-hole
+                topY = Math.max(dpToPx(38), holeRelY + holeR + dpToPx(10));
             } else {
-                paintAccentGreen.setAlpha(intAlpha);
-                drawBoltIcon(canvas, dpToPx(22), holeTopRowY, dpToPx(14), paintAccentGreen);
-
-                paintTextPrimary.setTextSize(spToPx(13.5f));
-                paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-                canvas.drawText("Super Charge", dpToPx(38), holeTopRowY + dpToPx(5), paintTextPrimary);
-
-                paintTextPrimary.setTextSize(spToPx(17));
-                paintTextPrimary.setColor(Color.parseColor("#34D399"));
-                paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
-                canvas.drawText(batteryPct + "%", curW - dpToPx(20), holeTopRowY + dpToPx(6), paintTextPrimary);
-                paintTextPrimary.setColor(Color.WHITE);
+                topY = dpToPx(24);
             }
 
-            // Middle Row: Fluid horizontal charging level progress track
-            float barY = Math.max(dpToPx(50), holeRelY + holeR + dpToPx(8));
+            // Row 1: Left header status, Right big percentage
+            paintAccentGreen.setAlpha(intAlpha);
+            drawBoltIcon(canvas, dpToPx(22), topY, dpToPx(13), paintAccentGreen);
+
+            paintTextPrimary.setTextSize(spToPx(13.5f));
+            paintTextPrimary.setTextAlign(Paint.Align.LEFT);
+            String title = (batteryPct >= 100) ? "Fully charged" : "Fast charging";
+            canvas.drawText(title, dpToPx(38), topY + dpToPx(4.5f), paintTextPrimary);
+
+            paintTextPrimary.setTextSize(spToPx(18f));
+            paintTextPrimary.setColor(Color.parseColor("#34D399"));
+            paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
+            canvas.drawText(batteryPct + "%", curW - dpToPx(20), topY + dpToPx(5.5f), paintTextPrimary);
+            paintTextPrimary.setColor(Color.WHITE);
+
+            // Row 2: Fluid horizontal charging level progress track
+            float barY = topY + dpToPx(22);
             float barW = curW - dpToPx(40);
             paintTrack.setAlpha(Math.min(255, (int) (alpha * 35)));
             canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + barW, barY + dpToPx(6)), dpToPx(3), dpToPx(3), paintTrack);
@@ -996,23 +1001,22 @@ public class HyperRingOverlay {
             float fillRatio = Math.max(0.04f, Math.min(1.0f, batteryPct / 100f));
             float fillW = barW * fillRatio;
             canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + fillW, barY + dpToPx(6)), dpToPx(3), dpToPx(3), paintAccentGreen);
-            canvas.drawCircle(dpToPx(20) + fillW, barY + dpToPx(3), dpToPx(4), paintAccentGreen);
 
-            // Bottom Row: Power telemetry and HyperCore profile
-            float bottomY = barY + dpToPx(28);
+            // Row 3: Power telemetry and HyperCore profile
+            float bottomY = barY + dpToPx(24);
             paintTextSecondary.setTextSize(spToPx(11.5f));
             paintTextSecondary.setTextAlign(Paint.Align.LEFT);
             canvas.drawText(chargeWattStr + " · " + chargeCurrentStr, dpToPx(20), bottomY, paintTextSecondary);
 
             paintTextTertiary.setTextSize(spToPx(11f));
             paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
-            String rightSub = (!batteryTempStr.isEmpty() ? batteryTempStr + " · " : "") + "HyperCore: " + hyperCoreProfile;
+            String rightSub = (!batteryTempStr.isEmpty() ? batteryTempStr + " · " : "") + hyperCoreProfile;
             canvas.drawText(rightSub, curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (currentIsland == STATE_MEDIA) {
             float artSize = dpToPx(48);
             float artLeft = dpToPx(18);
-            float artTop = dpToPx(18);
+            float artTop = isCutoutCenter ? Math.max(dpToPx(18), holeRelY + holeR + dpToPx(4)) : dpToPx(18);
 
             // Album art disc
             paintAccentCyan.setAlpha(Math.min(255, (int) (alpha * 38)));
@@ -1033,7 +1037,7 @@ public class HyperRingOverlay {
             canvas.drawText(truncate(mediaArtist.isEmpty() ? "Media Playback" : mediaArtist, 22), textLeft, artTop + dpToPx(38), paintTextSecondary);
 
             // Progress track
-            float barY = dpToPx(76);
+            float barY = artTop + artSize + dpToPx(14);
             float barW = curW - dpToPx(36);
             paintTrack.setAlpha(Math.min(255, (int) (alpha * 40)));
             canvas.drawRoundRect(new RectF(dpToPx(18), barY, dpToPx(18) + barW, barY + dpToPx(2.5f)), dpToPx(2), dpToPx(2), paintTrack);
@@ -1042,7 +1046,7 @@ public class HyperRingOverlay {
             canvas.drawRoundRect(new RectF(dpToPx(18), barY, dpToPx(18) + (barW * 0.42f), barY + dpToPx(2.5f)), dpToPx(2), dpToPx(2), paintAccentCyan);
 
             // Playback controls
-            float btnY = curH - dpToPx(22);
+            float btnY = curH - dpToPx(20);
             float centerX = curW / 2.0f;
             float prevBtnX = centerX - dpToPx(65);
             float nextBtnX = centerX + dpToPx(65);
@@ -1056,17 +1060,19 @@ public class HyperRingOverlay {
             drawNextIcon(canvas, nextBtnX, btnY, dpToPx(13), paintIconFill);
 
         } else if (currentIsland == STATE_VOLUME) {
+            float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
+
             paintAccentCyan.setAlpha(intAlpha);
-            drawSpeakerIcon(canvas, dpToPx(24), dpToPx(22), dpToPx(14), volumePercent, paintAccentCyan);
+            drawSpeakerIcon(canvas, dpToPx(24), topY, dpToPx(14), volumePercent, paintAccentCyan);
 
             paintTextPrimary.setTextSize(spToPx(14));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText("Media Volume", dpToPx(44), dpToPx(27), paintTextPrimary);
+            canvas.drawText("Media Volume", dpToPx(44), topY + dpToPx(5), paintTextPrimary);
 
             paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
-            canvas.drawText(volumePercent + "%", curW - dpToPx(20), dpToPx(27), paintTextPrimary);
+            canvas.drawText(volumePercent + "%", curW - dpToPx(20), topY + dpToPx(5), paintTextPrimary);
 
-            float barY = dpToPx(46);
+            float barY = topY + dpToPx(22);
             float barW = curW - dpToPx(40);
             paintTrack.setAlpha(Math.min(255, (int) (alpha * 35)));
             canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + barW, barY + dpToPx(8)), dpToPx(4), dpToPx(4), paintTrack);
@@ -1075,28 +1081,30 @@ public class HyperRingOverlay {
             float fillRatio = Math.max(0.04f, Math.min(1.0f, volumePercent / 100f));
             canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + (barW * fillRatio), barY + dpToPx(8)), dpToPx(4), dpToPx(4), paintAccentCyan);
 
-            float bottomY = barY + dpToPx(24);
+            float bottomY = barY + dpToPx(22);
             paintTextTertiary.setTextSize(spToPx(11f));
             paintTextTertiary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText("Stream Music · Output Speaker", dpToPx(20), bottomY, paintTextTertiary);
+            canvas.drawText("Speaker output", dpToPx(20), bottomY, paintTextTertiary);
 
             paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
             canvas.drawText(volumePercent == 0 ? "Muted" : "Active", curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (currentIsland == STATE_RINGER) {
+            float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
+
             paintAccentAmber.setAlpha(intAlpha);
-            drawBellIcon(canvas, dpToPx(24), dpToPx(22), dpToPx(14), ringerLabel, paintAccentAmber);
+            drawBellIcon(canvas, dpToPx(24), topY, dpToPx(14), ringerLabel, paintAccentAmber);
 
             paintTextPrimary.setTextSize(spToPx(14));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText("Ringer Profile", dpToPx(44), dpToPx(27), paintTextPrimary);
+            canvas.drawText("Ringer Profile", dpToPx(44), topY + dpToPx(5), paintTextPrimary);
 
             paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
             paintTextPrimary.setColor(Color.parseColor("#FBBF24"));
-            canvas.drawText(ringerLabel, curW - dpToPx(20), dpToPx(27), paintTextPrimary);
+            canvas.drawText(ringerLabel, curW - dpToPx(20), topY + dpToPx(5), paintTextPrimary);
             paintTextPrimary.setColor(Color.WHITE);
 
-            float descY = dpToPx(52);
+            float descY = topY + dpToPx(26);
             paintTextSecondary.setTextSize(spToPx(12f));
             paintTextSecondary.setTextAlign(Paint.Align.LEFT);
             String desc = "Calls and notifications audible";
@@ -1104,70 +1112,72 @@ public class HyperRingOverlay {
             else if ("Vibrate".equalsIgnoreCase(ringerLabel)) desc = "Calls and alerts will vibrate";
             canvas.drawText(desc, dpToPx(20), descY, paintTextSecondary);
 
-            float bottomY = dpToPx(74);
-            paintTextTertiary.setTextSize(spToPx(11f));
-            canvas.drawText("Hardware state synchronized", dpToPx(20), bottomY, paintTextTertiary);
-
         } else if (currentIsland == STATE_NOTIFICATION) {
+            float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
+
             paintAccentAmber.setAlpha(intAlpha);
-            drawMessageIcon(canvas, dpToPx(24), dpToPx(22), dpToPx(13), paintAccentAmber);
+            drawMessageIcon(canvas, dpToPx(24), topY, dpToPx(13), paintAccentAmber);
 
             paintTextPrimary.setTextSize(spToPx(13.5f));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText(notifAppName, dpToPx(44), dpToPx(26), paintTextPrimary);
+            canvas.drawText(notifAppName, dpToPx(44), topY + dpToPx(4), paintTextPrimary);
 
             paintTextTertiary.setTextSize(spToPx(11f));
             paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
-            canvas.drawText("Just now", curW - dpToPx(20), dpToPx(26), paintTextTertiary);
+            canvas.drawText("Just now", curW - dpToPx(20), topY + dpToPx(4), paintTextTertiary);
 
-            float titleY = dpToPx(48);
+            float titleY = topY + dpToPx(24);
             paintTextPrimary.setTextSize(spToPx(13f));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
             String displayTitle = (notifTitle != null && !notifTitle.isEmpty()) ? notifTitle : notifAppName;
             canvas.drawText(truncate(displayTitle, 30), dpToPx(20), titleY, paintTextPrimary);
 
-            float contentY = dpToPx(70);
+            float contentY = titleY + dpToPx(20);
             paintTextSecondary.setTextSize(spToPx(11.5f));
-            String displayContent = (notifContent != null && !notifContent.isEmpty()) ? notifContent : "New notification received";
+            String displayContent = (notifContent != null && !notifContent.isEmpty()) ? notifContent : "New message received";
             canvas.drawText(truncate(displayContent, 36), dpToPx(20), contentY, paintTextSecondary);
 
         } else if (currentIsland == STATE_TORCH) {
+            float topY = isCutoutCenter ? Math.max(dpToPx(24), holeRelY + holeR + dpToPx(6)) : dpToPx(24);
+
             paintAccentAmber.setAlpha(intAlpha);
-            drawTorchIcon(canvas, dpToPx(24), dpToPx(24), dpToPx(14), paintAccentAmber);
+            drawTorchIcon(canvas, dpToPx(24), topY, dpToPx(14), paintAccentAmber);
 
             paintTextPrimary.setTextSize(spToPx(14));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText("Flashlight Active", dpToPx(44), dpToPx(29), paintTextPrimary);
+            canvas.drawText("Flashlight", dpToPx(44), topY + dpToPx(5), paintTextPrimary);
 
             paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
             paintTextPrimary.setColor(Color.parseColor("#FBBF24"));
-            canvas.drawText("On", curW - dpToPx(20), dpToPx(29), paintTextPrimary);
+            canvas.drawText("Active", curW - dpToPx(20), topY + dpToPx(5), paintTextPrimary);
             paintTextPrimary.setColor(Color.WHITE);
 
-            float descY = dpToPx(58);
+            float descY = topY + dpToPx(26);
             paintTextSecondary.setTextSize(spToPx(12f));
             paintTextSecondary.setTextAlign(Paint.Align.LEFT);
             canvas.drawText("Rear LED illuminated · Tap to toggle", dpToPx(20), descY, paintTextSecondary);
 
         } else if (currentIsland == STATE_HYPERDL) {
+            float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
+
             paintAccentCyan.setAlpha(intAlpha);
-            drawDownloadIcon(canvas, dpToPx(24), dpToPx(22), dpToPx(12), paintAccentCyan);
+            drawDownloadIcon(canvas, dpToPx(24), topY, dpToPx(12), paintAccentCyan);
 
             paintTextPrimary.setTextSize(spToPx(13.5f));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText("HyperDL Engine", dpToPx(44), dpToPx(27), paintTextPrimary);
+            canvas.drawText("HyperDL Engine", dpToPx(44), topY + dpToPx(5), paintTextPrimary);
 
             paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
             paintTextPrimary.setColor(Color.parseColor("#38BDF8"));
-            canvas.drawText(hyperDLSpeed, curW - dpToPx(20), dpToPx(27), paintTextPrimary);
+            canvas.drawText(hyperDLSpeed, curW - dpToPx(20), topY + dpToPx(5), paintTextPrimary);
             paintTextPrimary.setColor(Color.WHITE);
 
-            float fileY = dpToPx(48);
+            float fileY = topY + dpToPx(22);
             paintTextSecondary.setTextSize(spToPx(11.5f));
             paintTextSecondary.setTextAlign(Paint.Align.LEFT);
             canvas.drawText(truncate(hyperDLFile, 30), dpToPx(20), fileY, paintTextSecondary);
 
-            float barY = dpToPx(66);
+            float barY = fileY + dpToPx(16);
             float barW = curW - dpToPx(40);
             paintTrack.setAlpha(Math.min(255, (int) (alpha * 40)));
             canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + barW, barY + dpToPx(4)), dpToPx(2), dpToPx(2), paintTrack);
@@ -1212,7 +1222,6 @@ public class HyperRingOverlay {
             }
         }
     }
-
 
     private static void drawBellIcon(Canvas canvas, float cx, float cy, float size, String mode, Paint paint) {
         Path p = new Path();
@@ -1343,17 +1352,12 @@ public class HyperRingOverlay {
         return s.substring(0, max - 1) + "…";
     }
 
-    // Hardware VSYNC-Paced Choreographer Frame Loop
+    // Hardware VSYNC-Paced Choreographer Frame Loop (Awake only when animating)
     private static final Choreographer.FrameCallback vsyncCallback = new Choreographer.FrameCallback() {
         @Override
         public void doFrame(long frameTimeNanos) {
             if (!isScreenInteractive) {
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        Choreographer.getInstance().postFrameCallback(vsyncCallback);
-                    }
-                }, 1200);
+                isLoopRunning = false;
                 return;
             }
 
@@ -1363,23 +1367,23 @@ public class HyperRingOverlay {
 
             long now = SystemClock.uptimeMillis();
 
-            syncConfigAndTriggers();
             checkDisplayOrientation();
             resolveTargetState(now);
 
-            springX.update(dt);
-            springY.update(dt);
-            springW.update(dt);
-            springH.update(dt);
-            springR.update(dt);
-            springContentAlpha.update(dt);
+            boolean sxMoving = springX.update(dt);
+            boolean syMoving = springY.update(dt);
+            boolean swMoving = springW.update(dt);
+            boolean shMoving = springH.update(dt);
+            boolean srMoving = springR.update(dt);
+            boolean saMoving = springContentAlpha.update(dt);
+
+            boolean anyMoving = sxMoving || syMoving || swMoving || shMoving || srMoving || saMoving;
 
             if (currentIsland == STATE_MEDIA && isMediaPlaying && (now - lastWaveStep > 85)) {
                 stepAudioBars();
                 lastWaveStep = now;
             }
 
-            updateWindowBounds();
             if (ringView != null) ringView.invalidate();
 
             if (now - lastStatusPersist > 2500) {
@@ -1387,13 +1391,35 @@ public class HyperRingOverlay {
                 lastStatusPersist = now;
             }
 
-            Choreographer.getInstance().postFrameCallback(this);
+            // Continue loop only if springs are still in motion, timeouts are active, or media is playing
+            boolean needNextFrame = anyMoving 
+                    || (currentIsland == STATE_MEDIA && isMediaPlaying) 
+                    || (expandCollapseTime > 0) 
+                    || (currentIsland == STATE_CALIBRATION);
+
+            if (needNextFrame) {
+                Choreographer.getInstance().postFrameCallback(this);
+            } else {
+                isLoopRunning = false;
+                onAnimationSettled();
+            }
         }
     };
 
-    private static void startEngineLoop() {
-        lastFrameNanos = System.nanoTime();
-        Choreographer.getInstance().postFrameCallback(vsyncCallback);
+    public static void wakeEngineLoop() {
+        if (handler == null) return;
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (!isLoopRunning && isScreenInteractive) {
+                    isLoopRunning = true;
+                    lastFrameNanos = System.nanoTime();
+                    // Before animation starts, ensure window params accommodate the target state
+                    prepareWindowForTarget();
+                    Choreographer.getInstance().postFrameCallback(vsyncCallback);
+                }
+            }
+        });
     }
 
     private static void checkDisplayOrientation() {
@@ -1515,14 +1541,13 @@ public class HyperRingOverlay {
             if (currentIsland == STATE_MEDIA) {
                 targetH = dpToPx(126);
             } else if (currentIsland == STATE_CHARGING) {
-                targetH = dpToPx(104);
+                targetH = dpToPx(112);
             } else if (currentIsland == STATE_VOLUME) {
                 targetH = dpToPx(88);
             } else {
                 targetH = dpToPx(96);
             }
 
-            // Crucial Fix: Expand strictly downward, anchoring top near the camera hole
             targetY = Math.max(dpToPx(4), Math.min(displayHeightPx - targetH - dpToPx(12), cutoutCenterY - cutoutRadius - dpToPx(2)));
 
             if (Math.abs(cutoutCenterX - (displayWidthPx / 2.0f)) < (displayWidthPx * 0.15f)) {
@@ -1536,29 +1561,6 @@ public class HyperRingOverlay {
             targetX = Math.max(dpToPx(8), Math.min(displayWidthPx - targetW - dpToPx(8), targetX));
         }
 
-        boolean targetChanged = (targetX != lastTargetX || targetY != lastTargetY || targetW != lastTargetW || targetH != lastTargetH);
-        if (targetChanged) {
-            float curX = (springX != null) ? springX.current : targetX;
-            float curY = (springY != null) ? springY.current : targetY;
-            float curW = (springW != null) ? springW.current : targetW;
-            float curH = (springH != null) ? springH.current : targetH;
-
-            float minX = Math.min(curX, targetX);
-            float minY = Math.min(curY, targetY);
-            float maxX = Math.max(curX + curW, targetX + targetW);
-            float maxY = Math.max(curY + curH, targetY + targetH);
-
-            animBoundingX = minX;
-            animBoundingY = minY;
-            animBoundingW = maxX - minX;
-            animBoundingH = maxY - minY;
-
-            lastTargetX = targetX;
-            lastTargetY = targetY;
-            lastTargetW = targetW;
-            lastTargetH = targetH;
-        }
-
         springX.setTarget(targetX);
         springY.setTarget(targetY);
         springW.setTarget(targetW);
@@ -1567,48 +1569,131 @@ public class HyperRingOverlay {
         springContentAlpha.setTarget(targetContentAlpha);
     }
 
-    private static void updateWindowBounds() {
+    /**
+     * Pre-allocates window bounds to contain upcoming animations.
+     * Called ONCE before animation starts, avoiding mid-animation window resizing.
+     */
+    private static void prepareWindowForTarget() {
         if (params == null || windowManager == null || ringView == null) return;
+
+        if (currentIsland == STATE_IDLE) {
+            int targetFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                    | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                    | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
+                    | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+
+            int d = Math.round(cutoutRadius * 2.0f);
+            int x = cutoutCenterX - cutoutRadius;
+            int y = cutoutCenterY - cutoutRadius;
+
+            if (params.width != d || params.height != d || params.x != x || params.y != y || params.flags != targetFlags) {
+                params.width = d;
+                params.height = d;
+                params.x = x;
+                params.y = y;
+                params.flags = targetFlags;
+                try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+            }
+            return;
+        }
 
         int targetFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                 | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR;
 
-        if (currentIsland == STATE_IDLE || currentIsland == STATE_CALIBRATION) {
-            targetFlags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-        }
-
-        boolean moving = isAnySpringMoving();
-        int reqX;
-        int reqY;
         int reqW;
         int reqH;
+        int reqX;
+        int reqY;
 
-        if (moving) {
-            reqX = Math.max(0, Math.round(animBoundingX));
-            reqY = Math.max(0, Math.round(animBoundingY));
-            reqW = Math.max(1, Math.round(animBoundingW));
-            reqH = Math.max(1, Math.round(animBoundingH));
+        if (isExpanded) {
+            reqW = Math.min(displayWidthPx - dpToPx(24), dpToPx(320));
+            reqH = (currentIsland == STATE_MEDIA) ? dpToPx(126) : (currentIsland == STATE_CHARGING ? dpToPx(112) : dpToPx(96));
+            reqY = Math.max(dpToPx(4), cutoutCenterY - cutoutRadius - dpToPx(2));
+            if (Math.abs(cutoutCenterX - (displayWidthPx / 2.0f)) < (displayWidthPx * 0.15f)) {
+                reqX = Math.round(cutoutCenterX - (reqW / 2.0f));
+            } else if (cutoutCenterX < displayWidthPx * 0.35f) {
+                reqX = Math.round(Math.max(dpToPx(12), cutoutCenterX - cutoutRadius - dpToPx(4)));
+            } else {
+                reqX = Math.round(Math.min(displayWidthPx - reqW - dpToPx(12), cutoutCenterX + cutoutRadius + dpToPx(4) - reqW));
+            }
+            reqX = Math.max(dpToPx(8), Math.min(displayWidthPx - reqW - dpToPx(8), reqX));
         } else {
-            reqX = Math.round(springX.current);
-            reqY = Math.round(springY.current);
-            reqW = Math.max(1, Math.round(springW.current));
-            reqH = Math.max(1, Math.round(springH.current));
+            reqW = dpToPx(150);
+            reqH = Math.max(cutoutRadius * 2, dpToPx(34));
+            reqY = Math.round(cutoutCenterY - (reqH / 2.0f));
+            if (Math.abs(cutoutCenterX - (displayWidthPx / 2.0f)) < (displayWidthPx * 0.15f)) {
+                reqX = Math.round(cutoutCenterX - (reqW / 2.0f));
+            } else if (cutoutCenterX < displayWidthPx * 0.35f) {
+                reqX = Math.round(Math.max(dpToPx(8), cutoutCenterX - reqH / 2.0f));
+            } else {
+                reqX = Math.round(Math.min(displayWidthPx - reqW - dpToPx(8), cutoutCenterX + reqH / 2.0f - reqW));
+            }
+            reqX = Math.max(dpToPx(6), Math.min(displayWidthPx - reqW - dpToPx(6), reqX));
         }
 
-        boolean layoutChanged = params.width != reqW || params.height != reqH
-                || params.x != reqX || params.y != reqY || params.flags != targetFlags;
+        float curLeft = (springX != null) ? springX.current : params.x;
+        float curTop = (springY != null) ? springY.current : params.y;
+        float curRight = curLeft + ((springW != null) ? springW.current : params.width);
+        float curBottom = curTop + ((springH != null) ? springH.current : params.height);
 
-        if (layoutChanged) {
-            params.width = reqW;
-            params.height = reqH;
-            params.x = reqX;
-            params.y = reqY;
+        int unionLeft = Math.max(0, (int) Math.floor(Math.min(curLeft, reqX)));
+        int unionTop = Math.max(0, (int) Math.floor(Math.min(curTop, reqY)));
+        int unionRight = Math.min(displayWidthPx, (int) Math.ceil(Math.max(curRight, reqX + reqW)));
+        int unionBottom = Math.min(displayHeightPx, (int) Math.ceil(Math.max(curBottom, reqY + reqH)));
+        int unionW = Math.max(reqW, unionRight - unionLeft);
+        int unionH = Math.max(reqH, unionBottom - unionTop);
+
+        if (params.width != unionW || params.height != unionH || params.x != unionLeft || params.y != unionTop || params.flags != targetFlags) {
+            params.width = unionW;
+            params.height = unionH;
+            params.x = unionLeft;
+            params.y = unionTop;
             params.flags = targetFlags;
-            try {
-                windowManager.updateViewLayout(ringView, params);
-            } catch (Exception ignored) {}
+            try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * Called once when all springs reach stationary equilibrium.
+     * Snaps window bounds neatly to the settled card size.
+     */
+    private static void onAnimationSettled() {
+        if (params == null || windowManager == null || ringView == null) return;
+
+        if (currentIsland == STATE_IDLE) {
+            int d = Math.round(cutoutRadius * 2.0f);
+            params.width = d;
+            params.height = d;
+            params.x = cutoutCenterX - cutoutRadius;
+            params.y = cutoutCenterY - cutoutRadius;
+            params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+
+            if (!stealthRingIdle) {
+                ringView.setVisibility(View.GONE);
+            }
+        } else {
+            int reqW = Math.round(springW.current);
+            int reqH = Math.round(springH.current);
+            int reqX = Math.round(springX.current);
+            int reqY = Math.round(springY.current);
+
+            int targetFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                    | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                    | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR;
+
+            if (params.width != reqW || params.height != reqH || params.x != reqX || params.y != reqY || params.flags != targetFlags) {
+                params.width = reqW;
+                params.height = reqH;
+                params.x = reqX;
+                params.y = reqY;
+                params.flags = targetFlags;
+                try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+            }
         }
     }
 
@@ -1651,39 +1736,43 @@ public class HyperRingOverlay {
                         if (currentIsland != STATE_HYPERDL && currentIsland != STATE_CALIBRATION) {
                             currentIsland = STATE_HYPERDL;
                             isExpanded = false;
+                            wakeEngineLoop();
                         }
                     } else if (isMediaPlaying && enableMedia) {
                         if (currentIsland != STATE_MEDIA && currentIsland != STATE_CALIBRATION) {
                             currentIsland = STATE_MEDIA;
                             isExpanded = false;
+                            wakeEngineLoop();
                         }
                     } else if (currentIsland != STATE_CHARGING && currentIsland != STATE_CALIBRATION) {
                         if (currentIsland != STATE_IDLE) {
                             currentIsland = STATE_IDLE;
                             isExpanded = false;
+                            wakeEngineLoop();
                         }
                     }
                 } catch (Throwable ignored) {}
             }
-        }, 1000, 1400, TimeUnit.MILLISECONDS);
+        }, 1000, 1500, TimeUnit.MILLISECONDS);
 
         // Worker 2: Real-time notification logcat reader
         workerPool.execute(new Runnable() {
             @Override
             public void run() {
                 try {
-                    java.lang.Process p = Runtime.getRuntime().exec(new String[]{"logcat", "-b", "events", "-v", "raw", "-s", "notification_enqueue"});
+                    java.lang.Process p = Runtime.getRuntime().exec(new String[]{"logcat", "-b", "events", "-s", "notification_enqueue"});
                     BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
                     String line;
                     Pattern flagPattern = Pattern.compile("flags=0x([0-9a-fA-F]+)");
                     while ((line = reader.readLine()) != null) {
                         if (!enableNotifications || !isScreenInteractive) continue;
-                        if (line.contains("notification_enqueue:")) {
+                        if (line.contains("notification_enqueue") || line.contains("Notification(")) {
                             Matcher fm = flagPattern.matcher(line);
                             if (fm.find()) {
                                 try {
                                     int flags = Integer.parseInt(fm.group(1), 16);
-                                    if ((flags & (0x02 | 0x40)) != 0) {
+                                    // Skip ongoing / foreground service / group summaries
+                                    if ((flags & (0x02 | 0x40 | 0x200)) != 0) {
                                         continue;
                                     }
                                 } catch (Throwable ignored) {}
@@ -1701,6 +1790,7 @@ public class HyperRingOverlay {
                                         currentIsland = STATE_NOTIFICATION;
                                         isExpanded = false;
                                         expandCollapseTime = SystemClock.uptimeMillis() + 3200;
+                                        wakeEngineLoop();
                                     }
                                 }
                             }
@@ -1713,7 +1803,9 @@ public class HyperRingOverlay {
 
     private static boolean isUserFacingPackage(String pkg) {
         if (pkg == null || pkg.isEmpty()) return false;
-        if (pkg.equals("android") || pkg.contains("systemui") || pkg.contains("misound") || pkg.contains("securitycenter") || pkg.contains("powerkeeper")) {
+        if (pkg.equals("android") || pkg.contains("systemui") || pkg.contains("misound") 
+                || pkg.contains("securitycenter") || pkg.contains("powerkeeper") 
+                || pkg.contains("googlequicksearchbox") || pkg.contains("daemon")) {
             return false;
         }
         return true;
@@ -1769,6 +1861,7 @@ public class HyperRingOverlay {
                     p.destroy();
                     if (!title.isEmpty()) notifTitle = title;
                     if (!text.isEmpty()) notifContent = text;
+                    wakeEngineLoop();
                 } catch (Throwable ignored) {}
             }
         });
@@ -1776,9 +1869,12 @@ public class HyperRingOverlay {
 
     private static void queryMediaSessionNative() {
         try {
-            // First check fast AudioManager isMusicActive()
             AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
             boolean audioActive = am != null && am.isMusicActive();
+
+            if (!audioActive && !isMediaPlaying) {
+                return;
+            }
 
             java.lang.Process p = Runtime.getRuntime().exec(new String[]{"dumpsys", "media_session"});
             BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
@@ -1806,43 +1902,41 @@ public class HyperRingOverlay {
             reader.close();
             p.destroy();
 
+            boolean prevPlay = isMediaPlaying;
             isMediaPlaying = foundPlaying || audioActive;
             if (foundPlaying) {
                 if (!tempTitle.isEmpty()) mediaTitle = tempTitle;
                 if (!tempArtist.isEmpty()) mediaArtist = tempArtist;
             }
+
+            if (isMediaPlaying != prevPlay) {
+                wakeEngineLoop();
+            }
         } catch (Throwable ignored) {}
     }
 
     private static void toggleMediaPlayback() {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    Runtime.getRuntime().exec(new String[]{"input", "keyevent", "85"});
-                    isMediaPlaying = !isMediaPlaying;
-                } catch (Throwable ignored) {}
-            }
-        }).start();
+        dispatchKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+        isMediaPlaying = !isMediaPlaying;
+        wakeEngineLoop();
     }
 
     private static void skipMediaNext() {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    Runtime.getRuntime().exec(new String[]{"input", "keyevent", "87"});
-                } catch (Throwable ignored) {}
-            }
-        }).start();
+        dispatchKey(KeyEvent.KEYCODE_MEDIA_NEXT);
+        wakeEngineLoop();
     }
 
     private static void skipMediaPrevious() {
+        dispatchKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS);
+        wakeEngineLoop();
+    }
+
+    private static void dispatchKey(final int keyCode) {
         new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
-                    Runtime.getRuntime().exec(new String[]{"input", "keyevent", "88"});
+                    Runtime.getRuntime().exec(new String[]{"input", "keyevent", String.valueOf(keyCode)});
                 } catch (Throwable ignored) {}
             }
         }).start();
@@ -1878,7 +1972,10 @@ public class HyperRingOverlay {
     private static void queryHyperDLStatusNative() {
         File f = new File("/data/local/tmp/hyperdl_status.json");
         if (!f.exists()) {
-            isHyperDLActive = false;
+            if (isHyperDLActive) {
+                isHyperDLActive = false;
+                wakeEngineLoop();
+            }
             return;
         }
 
@@ -2001,103 +2098,104 @@ public class HyperRingOverlay {
         }).start();
     }
 
-    private static void syncConfigAndTriggers() {
+    private static void processTriggerCmd() {
         File trig = new File(triggerPath);
-        if (trig.exists()) {
-            try (BufferedReader br = new BufferedReader(new FileReader(trig))) {
-                String cmd = br.readLine();
-                if (cmd != null) {
-                    cmd = cmd.trim();
-                    if (cmd.startsWith("charge")) {
-                        readBatteryHardwareTelemetry();
-                        triggerChargingEvent();
-                    } else if (cmd.startsWith("media")) {
-                        currentIsland = STATE_MEDIA;
-                        isMediaPlaying = true;
-                        mediaTitle = "Starboy";
-                        mediaArtist = "The Weeknd";
-                        isExpanded = false;
-                    } else if (cmd.startsWith("volume")) {
-                        String[] parts = cmd.split(":");
-                        if (parts.length > 1) {
-                            try { volumePercent = Integer.parseInt(parts[1].trim()); } catch (Exception ignored) {}
-                        } else {
-                            volumePercent = 75;
-                        }
-                        currentIsland = STATE_VOLUME;
-                        isExpanded = false;
-                        expandCollapseTime = SystemClock.uptimeMillis() + 2000;
-                    } else if (cmd.startsWith("ringer")) {
-                        String[] parts = cmd.split(":");
-                        if (parts.length > 1) {
-                            ringerLabel = parts[1].trim();
-                        } else {
-                            ringerLabel = "Silent";
-                        }
-                        currentIsland = STATE_RINGER;
-                        isExpanded = false;
-                        expandCollapseTime = SystemClock.uptimeMillis() + 2200;
-                    } else if (cmd.startsWith("notif") || cmd.startsWith("notification")) {
-                        String[] parts = cmd.split(":");
-                        if (parts.length > 3) {
-                            notifAppName = parts[1].trim();
-                            notifTitle = parts[2].trim();
-                            notifContent = parts[3].trim();
-                        } else if (parts.length > 2) {
-                            notifAppName = parts[1].trim();
-                            notifTitle = parts[2].trim();
-                            notifContent = "New message received";
-                        } else if (parts.length > 1) {
-                            notifAppName = parts[1].trim();
-                            notifTitle = "Notification";
-                            notifContent = "New update available";
-                        } else {
-                            notifAppName = "Telegram";
-                            notifTitle = "Alex";
-                            notifContent = "Build completed successfully";
-                        }
-                        currentIsland = STATE_NOTIFICATION;
-                        isExpanded = false;
-                        expandCollapseTime = SystemClock.uptimeMillis() + 3200;
-                    } else if (cmd.startsWith("torch")) {
-                        if (currentIsland == STATE_TORCH) {
-                            currentIsland = STATE_IDLE;
-                        } else {
-                            currentIsland = STATE_TORCH;
-                            isExpanded = false;
-                            expandCollapseTime = SystemClock.uptimeMillis() + 2600;
-                        }
-                    } else if (cmd.startsWith("hyperdl") || cmd.startsWith("download")) {
-                        currentIsland = STATE_HYPERDL;
-                        isHyperDLActive = true;
-                        hyperDLSpeed = "12.4 MB/s";
-                        hyperDLProgress = 68;
-                        isExpanded = false;
-                    } else if ("calibrate".equalsIgnoreCase(cmd)) {
-                        currentIsland = STATE_CALIBRATION;
-                        calibrationEndTime = SystemClock.uptimeMillis() + 6000;
-                    } else if ("expand".equalsIgnoreCase(cmd)) {
-                        if (currentIsland == STATE_IDLE) currentIsland = STATE_MEDIA;
-                        isExpanded = true;
-                    } else if ("collapse".equalsIgnoreCase(cmd)) {
-                        isExpanded = false;
-                    } else if ("idle".equalsIgnoreCase(cmd)) {
-                        currentIsland = STATE_IDLE;
-                        isExpanded = false;
-                    }
-                }
-            } catch (Throwable ignored) {}
-            trig.delete();
-        }
+        if (!trig.exists()) return;
 
-        File cfg = new File(configPath);
-        if (cfg.exists()) {
-            long mod = cfg.lastModified();
-            if (mod != lastConfigModified) {
-                readConfig();
-                lastConfigModified = mod;
+        try (BufferedReader br = new BufferedReader(new FileReader(trig))) {
+            String cmd = br.readLine();
+            if (cmd != null) {
+                cmd = cmd.trim();
+                if (cmd.startsWith("charge")) {
+                    readBatteryHardwareTelemetry();
+                    triggerChargingEvent();
+                } else if (cmd.startsWith("media")) {
+                    currentIsland = STATE_MEDIA;
+                    isMediaPlaying = true;
+                    mediaTitle = "Starboy";
+                    mediaArtist = "The Weeknd";
+                    isExpanded = false;
+                    wakeEngineLoop();
+                } else if (cmd.startsWith("volume")) {
+                    String[] parts = cmd.split(":");
+                    if (parts.length > 1) {
+                        try { volumePercent = Integer.parseInt(parts[1].trim()); } catch (Exception ignored) {}
+                    } else {
+                        volumePercent = 75;
+                    }
+                    currentIsland = STATE_VOLUME;
+                    isExpanded = false;
+                    expandCollapseTime = SystemClock.uptimeMillis() + 2000;
+                    wakeEngineLoop();
+                } else if (cmd.startsWith("ringer")) {
+                    String[] parts = cmd.split(":");
+                    if (parts.length > 1) {
+                        ringerLabel = parts[1].trim();
+                    } else {
+                        ringerLabel = "Silent";
+                    }
+                    currentIsland = STATE_RINGER;
+                    isExpanded = false;
+                    expandCollapseTime = SystemClock.uptimeMillis() + 2200;
+                    wakeEngineLoop();
+                } else if (cmd.startsWith("notif") || cmd.startsWith("notification")) {
+                    String[] parts = cmd.split(":");
+                    if (parts.length > 3) {
+                        notifAppName = parts[1].trim();
+                        notifTitle = parts[2].trim();
+                        notifContent = parts[3].trim();
+                    } else if (parts.length > 2) {
+                        notifAppName = parts[1].trim();
+                        notifTitle = parts[2].trim();
+                        notifContent = "New message received";
+                    } else if (parts.length > 1) {
+                        notifAppName = parts[1].trim();
+                        notifTitle = "Notification";
+                        notifContent = "New update available";
+                    } else {
+                        notifAppName = "Telegram";
+                        notifTitle = "Alex";
+                        notifContent = "Build completed successfully";
+                    }
+                    currentIsland = STATE_NOTIFICATION;
+                    isExpanded = false;
+                    expandCollapseTime = SystemClock.uptimeMillis() + 3200;
+                    wakeEngineLoop();
+                } else if (cmd.startsWith("torch")) {
+                    if (currentIsland == STATE_TORCH) {
+                        currentIsland = STATE_IDLE;
+                    } else {
+                        currentIsland = STATE_TORCH;
+                        isExpanded = false;
+                        expandCollapseTime = SystemClock.uptimeMillis() + 2600;
+                    }
+                    wakeEngineLoop();
+                } else if (cmd.startsWith("hyperdl") || cmd.startsWith("download")) {
+                    currentIsland = STATE_HYPERDL;
+                    isHyperDLActive = true;
+                    hyperDLSpeed = "12.4 MB/s";
+                    hyperDLProgress = 68;
+                    isExpanded = false;
+                    wakeEngineLoop();
+                } else if ("calibrate".equalsIgnoreCase(cmd)) {
+                    currentIsland = STATE_CALIBRATION;
+                    calibrationEndTime = SystemClock.uptimeMillis() + 6000;
+                    wakeEngineLoop();
+                } else if ("expand".equalsIgnoreCase(cmd)) {
+                    if (currentIsland == STATE_IDLE) currentIsland = STATE_MEDIA;
+                    isExpanded = true;
+                    wakeEngineLoop();
+                } else if ("collapse".equalsIgnoreCase(cmd)) {
+                    isExpanded = false;
+                    wakeEngineLoop();
+                } else if ("idle".equalsIgnoreCase(cmd)) {
+                    currentIsland = STATE_IDLE;
+                    isExpanded = false;
+                    wakeEngineLoop();
+                }
             }
-        }
+        } catch (Throwable ignored) {}
+        trig.delete();
     }
 
     private static void readConfig() {
@@ -2110,22 +2208,22 @@ public class HyperRingOverlay {
             while ((line = br.readLine()) != null) sb.append(line);
             String json = sb.toString();
 
-            cutoutCenterX      = parseInt(json, "cutout_x", cutoutCenterX);
-            cutoutCenterY      = parseInt(json, "cutout_y", cutoutCenterY);
-            cutoutRadius       = parseInt(json, "cutout_radius", cutoutRadius);
-            enableMedia        = parseBool(json, "enable_media", enableMedia);
-            enableCharging     = parseBool(json, "enable_charging", enableCharging);
-            enableVolume       = parseBool(json, "enable_volume", enableVolume);
-            enableRinger       = parseBool(json, "enable_ringer", enableRinger);
+            cutoutCenterX       = parseInt(json, "cutout_x", cutoutCenterX);
+            cutoutCenterY       = parseInt(json, "cutout_y", cutoutCenterY);
+            cutoutRadius        = parseInt(json, "cutout_radius", cutoutRadius);
+            enableMedia         = parseBool(json, "enable_media", enableMedia);
+            enableCharging      = parseBool(json, "enable_charging", enableCharging);
+            enableVolume        = parseBool(json, "enable_volume", enableVolume);
+            enableRinger        = parseBool(json, "enable_ringer", enableRinger);
             enableNotifications = parseBool(json, "enable_notifications", enableNotifications);
-            enableHyperDL      = parseBool(json, "enable_hyperdl", enableHyperDL);
-            enableHyperCore    = parseBool(json, "enable_hypercore", enableHyperCore);
-            stealthRingIdle    = parseBool(json, "stealth_ring_idle", stealthRingIdle);
-            hideInLandscape    = parseBool(json, "hide_in_landscape", hideInLandscape);
-            springStiffness    = parseFloat(json, "spring_stiffness", springStiffness);
-            springDamping      = parseFloat(json, "spring_damping", springDamping);
-            autoExpandCharging = parseBool(json, "auto_expand_charging", autoExpandCharging);
-            expandTimeoutMs    = parseInt(json, "expand_timeout_ms", expandTimeoutMs);
+            enableHyperDL       = parseBool(json, "enable_hyperdl", enableHyperDL);
+            enableHyperCore     = parseBool(json, "enable_hypercore", enableHyperCore);
+            stealthRingIdle     = parseBool(json, "stealth_ring_idle", stealthRingIdle);
+            hideInLandscape     = parseBool(json, "hide_in_landscape", hideInLandscape);
+            springStiffness     = parseFloat(json, "spring_stiffness", springStiffness);
+            springDamping       = parseFloat(json, "spring_damping", springDamping);
+            autoExpandCharging  = parseBool(json, "auto_expand_charging", autoExpandCharging);
+            expandTimeoutMs     = parseInt(json, "expand_timeout_ms", expandTimeoutMs);
 
             if (springX != null) {
                 springX.setParameters(springStiffness, springDamping);

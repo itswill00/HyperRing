@@ -1,7 +1,7 @@
 #!/system/bin/sh
 set -e
 
-PROJECT_DIR="/data/data/com.termux/files/home/HyperRing_Module"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="${PROJECT_DIR}/releases"
 DOWNLOAD_DIR="/sdcard/Download"
 MOD_TARGET="/data/adb/modules/hyperring"
@@ -51,32 +51,52 @@ done
 echo "HyperRing ${VERSION} (${VERSION_CODE})"
 
 if [ "$MODE" != "deploy_only" ]; then
-    # 1. Compile WebUI
-    if [ -d "webui" ]; then
+    # 1. Compile WebUI if tools are available, otherwise preserve bundled webroot/index.html
+    if [ -d "webui" ] && command -v node >/dev/null 2>&1 && [ -f "webui/node_modules/vite/bin/vite.js" ]; then
         echo "Building WebUI bundle..."
-        (cd webui && node ./node_modules/vite/bin/vite.js build >/dev/null 2>&1)
-        mkdir -p webroot
-        cp webui/dist/index.html webroot/index.html
+        (cd webui && node ./node_modules/vite/bin/vite.js build >/dev/null 2>&1) || true
+        if [ -f "webui/dist/index.html" ]; then
+            mkdir -p webroot
+            cp webui/dist/index.html webroot/index.html
+        fi
+    elif [ -f "webroot/index.html" ]; then
+        echo "Using pre-built WebUI (webroot/index.html)..."
     fi
 
     # 2. Compile Java DEX
-    ANDROID_JAR="/data/data/com.termux/files/usr/share/java/android.jar"
-    if [ ! -f "$ANDROID_JAR" ]; then
-        ANDROID_JAR=$(find /data/data/com.termux/files/ -name "android.jar" 2>/dev/null | head -n 1)
+    ANDROID_JAR="${ANDROID_JAR:-}"
+    if [ -z "$ANDROID_JAR" ] || [ ! -f "$ANDROID_JAR" ]; then
+        for candidate in \
+            "./android.jar" \
+            "/data/data/com.termux/files/usr/share/java/android.jar" \
+            "${ANDROID_HOME}/platforms/android-34/android.jar" \
+            "${ANDROID_SDK_ROOT}/platforms/android-34/android.jar" \
+            "/opt/android-sdk/platforms/android-34/android.jar"; do
+            if [ -f "$candidate" ]; then
+                ANDROID_JAR="$candidate"
+                break
+            fi
+        done
     fi
 
     if [ -z "$ANDROID_JAR" ] || [ ! -f "$ANDROID_JAR" ]; then
-        echo "Error: android.jar not found"
-        exit 1
+        ANDROID_JAR=$(find /data/data/com.termux/files/ -name "android.jar" 2>/dev/null | head -n 1 || true)
     fi
 
-    echo "Compiling Java DEX overlay..."
-    mkdir -p build/classes bin
-    rm -rf build/classes/*
-    ecj -cp "$ANDROID_JAR" -d build/classes src/HyperRingOverlay.java
-    dx --dex --output=bin/hyperring.dex build/classes
-    chmod 644 bin/hyperring.dex
-    rm -rf build/classes
+    if command -v ecj >/dev/null 2>&1 && command -v dx >/dev/null 2>&1 && [ -n "$ANDROID_JAR" ] && [ -f "$ANDROID_JAR" ]; then
+        echo "Compiling Java DEX overlay..."
+        mkdir -p build/classes bin
+        rm -rf build/classes/*
+        ecj -cp "$ANDROID_JAR" -d build/classes src/HyperRingOverlay.java
+        dx --dex --output=bin/hyperring.dex build/classes
+        chmod 644 bin/hyperring.dex
+        rm -rf build/classes
+    elif [ -f "bin/hyperring.dex" ]; then
+        echo "Using existing compiled DEX (bin/hyperring.dex)..."
+    else
+        echo "Error: android.jar or DEX compiler not found"
+        exit 1
+    fi
 
     # 3. Package flashable ZIP
     mkdir -p "$OUTPUT_DIR"
