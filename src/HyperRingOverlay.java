@@ -255,13 +255,17 @@ public class HyperRingOverlay {
             current += dpos;
             velocity += dvel;
 
-            if (target <= cutoutRadius * 2.0f && current < target) {
+            if (target <= cutoutRadius * 2.0f && target > 1.5f && current < target) {
                 current = target;
                 velocity = 0f;
                 return false;
             }
 
-            if (Math.abs(velocity) < 0.25f && Math.abs(current - target) < 0.25f) {
+            boolean isNormalized = (target <= 1.05f && target >= 0.0f);
+            float posEpsilon = isNormalized ? 0.0005f : 0.25f;
+            float velEpsilon = isNormalized ? 0.001f : 0.25f;
+
+            if (Math.abs(velocity) < velEpsilon && Math.abs(current - target) < posEpsilon) {
                 current = target;
                 velocity = 0f;
                 return false;
@@ -270,7 +274,14 @@ public class HyperRingOverlay {
         }
 
         public boolean isMoving() {
-            return Math.abs(velocity) > 0.25f || Math.abs(current - target) > 0.25f;
+            boolean isNormalized = (target <= 1.05f && target >= 0.0f);
+            float posEpsilon = isNormalized ? 0.0005f : 0.25f;
+            float velEpsilon = isNormalized ? 0.001f : 0.25f;
+            return Math.abs(velocity) > velEpsilon || Math.abs(current - target) > posEpsilon;
+        }
+
+        public boolean isAtEquilibrium() {
+            return !isMoving();
         }
     }
 
@@ -702,39 +713,44 @@ public class HyperRingOverlay {
                 dm.registerDisplayListener(new DisplayManager.DisplayListener() {
                     @Override
                     public void onDisplayAdded(int displayId) {
+                        forceDisplayRebindNow();
                         scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayRemoved(int displayId) {
+                        forceDisplayRebindNow();
                         scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayChanged(int displayId) {
-                        if (displayId == Display.DEFAULT_DISPLAY) {
-                            scheduleRebindRetry();
-                        }
+                        forceDisplayRebindNow();
+                        scheduleRebindRetry();
                     }
                 }, handler);
             }
         } catch (Throwable ignored) {}
     }
 
+    private static void forceDisplayRebindNow() {
+        checkDisplayRebind();
+    }
+
     private static void scheduleRebindRetry() {
         if (handler == null) return;
-        checkDisplayRebind();
+        forceDisplayRebindNow();
         handler.postDelayed(new Runnable() {
-            @Override public void run() { checkDisplayRebind(); }
+            @Override public void run() { forceDisplayRebindNow(); }
         }, 150);
         handler.postDelayed(new Runnable() {
-            @Override public void run() { checkDisplayRebind(); }
+            @Override public void run() { forceDisplayRebindNow(); }
         }, 400);
         handler.postDelayed(new Runnable() {
-            @Override public void run() { checkDisplayRebind(); }
+            @Override public void run() { forceDisplayRebindNow(); }
         }, 800);
         handler.postDelayed(new Runnable() {
-            @Override public void run() { checkDisplayRebind(); }
+            @Override public void run() { forceDisplayRebindNow(); }
         }, 1500);
     }
 
@@ -765,6 +781,7 @@ public class HyperRingOverlay {
                             boolean readded = false;
                             try {
                                 if (ringView.getParent() == null && params != null) {
+                                    params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
                                     windowManager.addView(ringView, params);
                                     readded = true;
                                 }
@@ -774,6 +791,7 @@ public class HyperRingOverlay {
                                 return;
                             }
                         } else if (params != null) {
+                            params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
                             try {
                                 windowManager.updateViewLayout(ringView, params);
                             } catch (Throwable ignored) {}
@@ -859,16 +877,16 @@ public class HyperRingOverlay {
             }
         });
 
-        // TYPE_ACCESSIBILITY_OVERLAY = 2032 (Layer 32): Highest overlay Z-order
-        // Immune to SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS (screen recorder, floating tools)
-        // Falls back to TYPE_STATUS_BAR_SUB_PANEL (2017) and TYPE_APPLICATION_OVERLAY (2038)
-        int type = 2032;
+        // TYPE_STATUS_BAR_SUB_PANEL = 2017: Primary overlay type supported cleanly on HyperOS root app_process
+        // Falls back to TYPE_APPLICATION_OVERLAY (2038) and TYPE_ACCESSIBILITY_OVERLAY (2032)
+        int type = 2017;
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
 
         int initDiameter = Math.round(cutoutRadius * 2.0f);
 
@@ -912,15 +930,15 @@ public class HyperRingOverlay {
         }
 
         try {
-            params.type = 2032; // TYPE_ACCESSIBILITY_OVERLAY
+            params.type = 2017; // TYPE_STATUS_BAR_SUB_PANEL
             windowManager.addView(ringView, params);
         } catch (Throwable t1) {
             try {
-                params.type = 2017; // TYPE_STATUS_BAR_SUB_PANEL
+                params.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY; // 2038
                 windowManager.addView(ringView, params);
             } catch (Throwable t2) {
                 try {
-                    params.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+                    params.type = 2032; // TYPE_ACCESSIBILITY_OVERLAY
                     windowManager.addView(ringView, params);
                 } catch (Throwable ignored) {}
             }
@@ -1049,7 +1067,8 @@ public class HyperRingOverlay {
             // Micro-squash & stretch effect: fluid volume conservation based on horizontal spring velocity
             float velX = springW.velocity;
             float hSquash = 0f;
-            if (Math.abs(velX) > 120f) {
+            boolean isMorphFlight = morphSpring != null && (!morphSpring.isAtEquilibrium() || morphSpring.current > 0.0005f);
+            if (!isMorphFlight && !isExpanded && Math.abs(velX) > 120f) {
                 hSquash = Math.max(-dpToPx(2.0f), Math.min(dpToPx(3.5f), (velX / 1400f) * dpToPx(3.0f)));
             }
             float effH = Math.max(cutoutRadius * 2.0f, pillH - hSquash);
@@ -1093,17 +1112,16 @@ public class HyperRingOverlay {
         if (handler != null) {
             handler.removeCallbacks(autoCollapseRunnable);
         }
-        // Unified single-phase morphing physics: crisp fast decelerate curve (~220ms duration, stiffness ~580, damping ~0.96)
+        // Unified single-phase morphing physics: fluid organic collapse curve (~240ms duration, stiffness ~340, damping ~0.88)
         if (morphSpring != null) {
-            morphSpring.setParameters(580f, 0.96f);
+            morphSpring.setParameters(340f, 0.88f);
             morphSpring.setTarget(0.0f);
         }
         if (springContentAlpha != null) {
-            springContentAlpha.setParameters(650f, 1.0f);
+            springContentAlpha.setParameters(340f, 0.88f);
             springContentAlpha.setTarget(0.0f);
         }
         resolveTargetState(SystemClock.uptimeMillis());
-        prepareWindowForTarget();
         wakeEngineLoop();
     }
 
@@ -1947,7 +1965,7 @@ public class HyperRingOverlay {
             resolveTargetState(now);
 
             boolean anyMoving = false;
-            boolean isCardMorphing = morphSpring != null && (morphSpring.isMoving() || (isExpanded && morphSpring.current < 0.999f) || (!isExpanded && morphSpring.current > 0.001f));
+            boolean isCardMorphing = morphSpring != null && (!morphSpring.isAtEquilibrium() || (isExpanded && morphSpring.current < 0.999f) || (!isExpanded && morphSpring.current > 0.0005f));
 
             if (isCardMorphing && currentIsland != STATE_IDLE && currentIsland != STATE_CALIBRATION && !isCollapsing) {
                 boolean mMov = morphSpring.update(dt);
@@ -1978,7 +1996,7 @@ public class HyperRingOverlay {
                 boolean saMoving = springContentAlpha.update(dt);
                 anyMoving = mMov || saMoving;
 
-                if (!mMov && !isExpanded) {
+                if (!mMov && !isExpanded && morphSpring.isAtEquilibrium() && morphSpring.current <= 0.0005f) {
                     prepareWindowForTarget();
                 }
             } else {
@@ -2374,7 +2392,8 @@ public class HyperRingOverlay {
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
 
         if (currentIsland == STATE_IDLE && !isCollapsing) {
             targetFlags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
@@ -2392,11 +2411,13 @@ public class HyperRingOverlay {
         int reqH;
         int reqY;
 
+        boolean isMorphFlight = morphSpring != null && (!morphSpring.isAtEquilibrium() || morphSpring.current > 0.0005f);
+
         if (currentIsland == STATE_CALIBRATION) {
             reqW = Math.round(Math.max(cutoutRadius * 3.0f, dpToPx(72)));
             reqH = reqW;
             reqY = Math.round(effCutoutY - (reqH / 2.0f));
-        } else if (isExpanded || (morphSpring != null && morphSpring.current > 0.01f)) {
+        } else if (isExpanded || isMorphFlight) {
             int defaultCardW = (customCardWidth > 0) ? dpToPx(customCardWidth) : dpToPx(320);
             reqW = Math.min(displayWidthPx - dpToPx(16), defaultCardW);
             int rawCardH = (customCardHeight > 0) ? dpToPx(customCardHeight) : getDefaultCardHeight(currentIsland);
@@ -2484,9 +2505,10 @@ public class HyperRingOverlay {
             try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
             persistStatusAsync();
         } else {
-            if (!isExpanded) {
+            boolean isMorphFlight = morphSpring != null && (!morphSpring.isAtEquilibrium() || morphSpring.current > 0.0005f);
+            if (!isExpanded && !isMorphFlight) {
                 prepareWindowForTarget();
-            } else {
+            } else if (isExpanded) {
                 int reqW = Math.round(springW.current);
                 int reqH = Math.round(springH.current);
                 if (params.width != reqW || params.height != reqH) {
@@ -3622,12 +3644,9 @@ public class HyperRingOverlay {
                     previewLock = true;
                     currentIsland = STATE_MEDIA;
                     activeIslandType = STATE_MEDIA;
-                    isExpanded = true;
-                    isCollapsing = false;
                     calibrationEndTime = 0L;
+                    expandCard();
                     if (handler != null) handler.removeCallbacks(autoCollapseRunnable);
-                    prepareWindowForTarget();
-                    wakeEngineLoop();
                 } else if (cmd.startsWith("preview:reticle") || "calibrate".equalsIgnoreCase(cmd)) {
                     previewLock = true;
                     showIsland(STATE_CALIBRATION, 0);
@@ -3635,16 +3654,17 @@ public class HyperRingOverlay {
                 } else if (cmd.startsWith("preview:off") || "calibrate_off".equalsIgnoreCase(cmd) || "preview-off".equalsIgnoreCase(cmd)) {
                     previewLock = false;
                     startCollapse();
-                } else if ("expand".equalsIgnoreCase(cmd)) {
+                } else if (cmd.startsWith("expand")) {
                     if (currentIsland == STATE_IDLE) {
                         currentIsland = STATE_MEDIA;
                         activeIslandType = STATE_MEDIA;
                     }
                     expandCard();
-                } else if ("collapse".equalsIgnoreCase(cmd)) {
+                } else if (cmd.startsWith("collapse")) {
                     collapseCard();
-                } else if ("idle".equalsIgnoreCase(cmd)) {
+                } else if (cmd.startsWith("idle")) {
                     previewLock = false;
+                    isMediaPlaying = false;
                     startCollapse();
                 }
                 persistStatusAsync();
