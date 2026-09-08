@@ -274,11 +274,12 @@ public class HyperRingOverlay {
         }
     }
 
-    // Fluid Geometry Springs (width, height, corner-radius, content alpha)
+    // Fluid Geometry Springs (width, height, corner-radius, content alpha, unified morph progress)
     private static Spring springW;
     private static Spring springH;
     private static Spring springR;
     private static Spring springContentAlpha;
+    private static Spring morphSpring;
 
     // Visualizer simulation bars
     private static float[] barHeights = new float[]{0.3f, 0.7f, 0.5f, 0.9f};
@@ -387,6 +388,7 @@ public class HyperRingOverlay {
         springH = new Spring(initD, springStiffness, springDamping);
         springR = new Spring(cutoutRadius, springStiffness, springDamping);
         springContentAlpha = new Spring(0.0f, 520f, 1.05f);
+        morphSpring = new Spring(0.0f, 320f, 0.82f);
 
         initGraphics();
         registerSystemReceivers();
@@ -700,23 +702,40 @@ public class HyperRingOverlay {
                 dm.registerDisplayListener(new DisplayManager.DisplayListener() {
                     @Override
                     public void onDisplayAdded(int displayId) {
-                        checkDisplayRebind();
+                        scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayRemoved(int displayId) {
-                        checkDisplayRebind();
+                        scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayChanged(int displayId) {
                         if (displayId == Display.DEFAULT_DISPLAY) {
-                            checkDisplayRebind();
+                            scheduleRebindRetry();
                         }
                     }
                 }, handler);
             }
         } catch (Throwable ignored) {}
+    }
+
+    private static void scheduleRebindRetry() {
+        if (handler == null) return;
+        checkDisplayRebind();
+        handler.postDelayed(new Runnable() {
+            @Override public void run() { checkDisplayRebind(); }
+        }, 150);
+        handler.postDelayed(new Runnable() {
+            @Override public void run() { checkDisplayRebind(); }
+        }, 400);
+        handler.postDelayed(new Runnable() {
+            @Override public void run() { checkDisplayRebind(); }
+        }, 800);
+        handler.postDelayed(new Runnable() {
+            @Override public void run() { checkDisplayRebind(); }
+        }, 1500);
     }
 
     private static void checkDisplayRebind() {
@@ -738,16 +757,22 @@ public class HyperRingOverlay {
                     }
                     resolveDisplayMetrics();
                     if (ringView != null && windowManager != null) {
-                        boolean attached = ringView.isAttachedToWindow();
+                        boolean attached = ringView.isAttachedToWindow() && ringView.getWindowToken() != null;
                         if (!attached) {
                             try {
                                 windowManager.removeViewImmediate(ringView);
                             } catch (Throwable ignored) {}
+                            boolean readded = false;
                             try {
-                                if (params != null) {
+                                if (ringView.getParent() == null && params != null) {
                                     windowManager.addView(ringView, params);
+                                    readded = true;
                                 }
                             } catch (Throwable ignored) {}
+                            if (!readded) {
+                                attachWindow();
+                                return;
+                            }
                         } else if (params != null) {
                             try {
                                 windowManager.updateViewLayout(ringView, params);
@@ -755,6 +780,21 @@ public class HyperRingOverlay {
                         }
                     } else if (ringView == null) {
                         attachWindow();
+                        return;
+                    }
+
+                    if (ringView != null) {
+                        if (currentIsland != STATE_IDLE) {
+                            if (ringView.getVisibility() != View.VISIBLE) {
+                                ringView.setVisibility(View.VISIBLE);
+                            }
+                        } else if (!isCollapsing) {
+                            if (ringView.getVisibility() != View.GONE) {
+                                ringView.setVisibility(View.GONE);
+                            }
+                        }
+                        ringView.requestLayout();
+                        ringView.invalidate();
                     }
                     wakeEngineLoop();
                 } catch (Throwable ignored) {}
@@ -807,10 +847,22 @@ public class HyperRingOverlay {
         if (windowManager == null) return;
 
         ringView = new RingView(context);
+        ringView.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {
+                v.postInvalidate();
+            }
 
-        // TYPE_STATUS_BAR_SUB_PANEL = 2017: Layer 17 sits above StatusBar (layer 14)
-        // This ensures touches on the island are delivered to HyperRing rather than stolen by the status bar
-        int type = 2017;
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+                scheduleRebindRetry();
+            }
+        });
+
+        // TYPE_ACCESSIBILITY_OVERLAY = 2032 (Layer 32): Highest overlay Z-order
+        // Immune to SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS (screen recorder, floating tools)
+        // Falls back to TYPE_STATUS_BAR_SUB_PANEL (2017) and TYPE_APPLICATION_OVERLAY (2038)
+        int type = 2032;
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
@@ -831,6 +883,8 @@ public class HyperRingOverlay {
 
         float effCutoutX = cutoutCenterX + xOffset;
         float effCutoutY = cutoutCenterY + yOffset;
+        int compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
+        int topAnchorY = notchMode ? Math.max(0, yOffset) : Math.round(effCutoutY - (compactH / 2.0f));
 
         if ("left".equalsIgnoreCase(pillAlignment)) {
             params.gravity = Gravity.TOP | Gravity.START;
@@ -845,7 +899,7 @@ public class HyperRingOverlay {
             params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
             params.x = Math.round(effCutoutX - (displayWidthPx / 2.0f));
         }
-        params.y = Math.round(effCutoutY - cutoutRadius);
+        params.y = topAnchorY;
 
         try {
             java.lang.reflect.Field f = WindowManager.LayoutParams.class.getField("LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS");
@@ -858,12 +912,18 @@ public class HyperRingOverlay {
         }
 
         try {
+            params.type = 2032; // TYPE_ACCESSIBILITY_OVERLAY
             windowManager.addView(ringView, params);
-        } catch (Throwable t) {
+        } catch (Throwable t1) {
             try {
-                params.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+                params.type = 2017; // TYPE_STATUS_BAR_SUB_PANEL
                 windowManager.addView(ringView, params);
-            } catch (Throwable ignored) {}
+            } catch (Throwable t2) {
+                try {
+                    params.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+                    windowManager.addView(ringView, params);
+                } catch (Throwable ignored) {}
+            }
         }
         if (currentIsland == STATE_IDLE) {
             ringView.setVisibility(View.GONE);
@@ -881,10 +941,10 @@ public class HyperRingOverlay {
     }
 
     private static float getPillRelY(float viewH, float pillH) {
-        if (isExpanded) {
-            return 0f;
+        if (currentIsland == STATE_CALIBRATION) {
+            return Math.max(0f, (viewH - pillH) / 2.0f);
         }
-        return Math.max(0f, (viewH - pillH) / 2.0f);
+        return 0f;
     }
 
     static class RingView extends View {
@@ -1013,12 +1073,14 @@ public class HyperRingOverlay {
                 handler.postDelayed(autoCollapseRunnable, Math.max(6000, expandTimeoutMs));
             }
         }
-        // Asymmetric Open Curve: natural elasticity & organic overshoot (approx (0.16, 1, 0.3, 1))
-        if (springW != null) {
-            springW.setParameters(360f, 0.76f);
-            springH.setParameters(340f, 0.75f);
-            springR.setParameters(380f, 0.78f);
+        // Unified single-phase morphing physics: organic spring curve (stiffness ~320, damping ~0.82)
+        if (morphSpring != null) {
+            morphSpring.setParameters(320f, 0.82f);
+            morphSpring.setTarget(1.0f);
+        }
+        if (springContentAlpha != null) {
             springContentAlpha.setParameters(420f, 0.88f);
+            springContentAlpha.setTarget(1.0f);
         }
         resolveTargetState(SystemClock.uptimeMillis());
         prepareWindowForTarget();
@@ -1031,12 +1093,14 @@ public class HyperRingOverlay {
         if (handler != null) {
             handler.removeCallbacks(autoCollapseRunnable);
         }
-        // Asymmetric Close Curve: snappier suction effect (220-260ms duration)
-        if (springW != null) {
-            springW.setParameters(520f, 0.94f);
-            springH.setParameters(540f, 0.95f);
-            springR.setParameters(540f, 0.96f);
+        // Unified single-phase morphing physics: crisp fast decelerate curve (~220ms duration, stiffness ~580, damping ~0.96)
+        if (morphSpring != null) {
+            morphSpring.setParameters(580f, 0.96f);
+            morphSpring.setTarget(0.0f);
+        }
+        if (springContentAlpha != null) {
             springContentAlpha.setParameters(650f, 1.0f);
+            springContentAlpha.setTarget(0.0f);
         }
         resolveTargetState(SystemClock.uptimeMillis());
         prepareWindowForTarget();
@@ -1882,12 +1946,48 @@ public class HyperRingOverlay {
             checkDisplayOrientation();
             resolveTargetState(now);
 
-            boolean swMoving = springW.update(dt);
-            boolean shMoving = springH.update(dt);
-            boolean srMoving = springR.update(dt);
-            boolean saMoving = springContentAlpha.update(dt);
+            boolean anyMoving = false;
+            boolean isCardMorphing = morphSpring != null && (morphSpring.isMoving() || (isExpanded && morphSpring.current < 0.999f) || (!isExpanded && morphSpring.current > 0.001f));
 
-            boolean anyMoving = swMoving || shMoving || srMoving || saMoving;
+            if (isCardMorphing && currentIsland != STATE_IDLE && currentIsland != STATE_CALIBRATION && !isCollapsing) {
+                boolean mMov = morphSpring.update(dt);
+                float t = Math.max(0.0f, morphSpring.current);
+
+                float compactW = (customPillWidth > 0) ? dpToPx(customPillWidth) : getDefaultPillWidth(currentIsland);
+                float compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
+                float compactR = compactH / 2.0f;
+
+                float defaultCardW = (customCardWidth > 0) ? dpToPx(customCardWidth) : dpToPx(320);
+                float cardW = Math.min(displayWidthPx - dpToPx(16), defaultCardW);
+                float cardH = getDefaultCardHeight(currentIsland);
+                float cardR = dpToPx(cardRadius > 0 ? cardRadius : 24);
+
+                // Unified single-phase morphing: width, height, and corner radius driven synchronously by progress t
+                springW.current = compactW + (cardW - compactW) * t;
+                springH.current = compactH + (cardH - compactH) * t;
+                springR.current = compactR + (cardR - compactR) * t;
+
+                springW.target = isExpanded ? cardW : compactW;
+                springH.target = isExpanded ? cardH : compactH;
+                springR.target = isExpanded ? cardR : compactR;
+
+                springW.velocity = (cardW - compactW) * morphSpring.velocity;
+                springH.velocity = (cardH - compactH) * morphSpring.velocity;
+                springR.velocity = (cardR - compactR) * morphSpring.velocity;
+
+                boolean saMoving = springContentAlpha.update(dt);
+                anyMoving = mMov || saMoving;
+
+                if (!mMov && !isExpanded) {
+                    prepareWindowForTarget();
+                }
+            } else {
+                boolean swMoving = springW.update(dt);
+                boolean shMoving = springH.update(dt);
+                boolean srMoving = springR.update(dt);
+                boolean saMoving = springContentAlpha.update(dt);
+                anyMoving = swMoving || shMoving || srMoving || saMoving;
+            }
 
             if (currentIsland == STATE_MEDIA && isMediaPlaying && !isExpanded && mediaShowWaveform && (now - lastWaveStep > 60)) {
                 stepAudioBars();
@@ -1986,9 +2086,8 @@ public class HyperRingOverlay {
         public void run() {
             if (!previewLock && currentIsland != STATE_IDLE && !isCollapsing) {
                 if (isExpanded) {
-                    isExpanded = false;
-                    wakeEngineLoop();
-                    if (handler != null) handler.postDelayed(this, expandTimeoutMs);
+                    collapseCard();
+                    if (handler != null && expandTimeoutMs > 0) handler.postDelayed(this, expandTimeoutMs);
                 } else {
                     startCollapse();
                 }
@@ -2034,6 +2133,10 @@ public class HyperRingOverlay {
                     if (handler != null) handler.postDelayed(autoCollapseRunnable, timeoutMs);
                 }
 
+                if (morphSpring != null) {
+                    morphSpring.snapTo(0.0f);
+                }
+
                 if (springW != null) {
                     springW.setParameters(springStiffness, springDamping);
                     springH.setParameters(springStiffness, springDamping);
@@ -2077,6 +2180,11 @@ public class HyperRingOverlay {
                 }
                 if (isCollapsing || currentIsland == STATE_IDLE) return;
                 isCollapsing = true;
+                isExpanded = false;
+
+                if (morphSpring != null) {
+                    morphSpring.snapTo(0.0f);
+                }
 
                 float initD = cutoutRadius * 2.0f;
                 if (springW != null) {
@@ -2248,6 +2356,9 @@ public class HyperRingOverlay {
         float effCutoutX = cutoutCenterX + xOffset;
         float effCutoutY = cutoutCenterY + yOffset;
 
+        int compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
+        int topAnchorY = notchMode ? Math.max(0, yOffset) : Math.round(effCutoutY - (compactH / 2.0f));
+
         if (isHUNTucked && currentIsland != STATE_CALIBRATION) {
             if (ringView.getVisibility() != View.GONE) {
                 ringView.setVisibility(View.GONE);
@@ -2285,26 +2396,17 @@ public class HyperRingOverlay {
             reqW = Math.round(Math.max(cutoutRadius * 3.0f, dpToPx(72)));
             reqH = reqW;
             reqY = Math.round(effCutoutY - (reqH / 2.0f));
-        } else if (isExpanded) {
+        } else if (isExpanded || (morphSpring != null && morphSpring.current > 0.01f)) {
             int defaultCardW = (customCardWidth > 0) ? dpToPx(customCardWidth) : dpToPx(320);
             reqW = Math.min(displayWidthPx - dpToPx(16), defaultCardW);
-            reqH = (customCardHeight > 0) ? dpToPx(customCardHeight) : getDefaultCardHeight(currentIsland);
-            if (notchMode || "cover".equalsIgnoreCase(cardPositionMode)) {
-                reqY = Math.max(0, yOffset);
-            } else {
-                // Floating below cutout / statusbar (dynamicSpot style - eliminates statusbar collision)
-                int baseBelowY = Math.round(effCutoutY + cutoutRadius + dpToPx(8));
-                reqY = Math.max(dpToPx(4), Math.min(displayHeightPx - reqH - dpToPx(12), baseBelowY + dpToPx(cardYOffset)));
-            }
+            int rawCardH = (customCardHeight > 0) ? dpToPx(customCardHeight) : getDefaultCardHeight(currentIsland);
+            reqH = Math.min(displayHeightPx - topAnchorY - dpToPx(16), rawCardH);
+            reqY = topAnchorY;
         } else {
             int defaultW = getDefaultPillWidth(currentIsland);
             reqW = (customPillWidth > 0) ? dpToPx(customPillWidth) : defaultW;
-            reqH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
-            if (notchMode) {
-                reqY = Math.max(0, yOffset);
-            } else {
-                reqY = Math.round(effCutoutY - (reqH / 2.0f));
-            }
+            reqH = compactH;
+            reqY = topAnchorY;
         }
 
         int newW = reqW;
@@ -2382,12 +2484,16 @@ public class HyperRingOverlay {
             try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
             persistStatusAsync();
         } else {
-            int reqW = Math.round(springW.current);
-            int reqH = Math.round(springH.current);
-            if (params.width != reqW || params.height != reqH) {
-                params.width = reqW;
-                params.height = reqH;
-                try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+            if (!isExpanded) {
+                prepareWindowForTarget();
+            } else {
+                int reqW = Math.round(springW.current);
+                int reqH = Math.round(springH.current);
+                if (params.width != reqW || params.height != reqH) {
+                    params.width = reqW;
+                    params.height = reqH;
+                    try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+                }
             }
         }
     }
@@ -2545,6 +2651,11 @@ public class HyperRingOverlay {
                             // Heads-Up Notification (HUN) banner alert detection & collision avoidance
                             if (line.contains("notification_alert") || line.contains("heads_up") || line.contains("sysui_heads_up")) {
                                 tuckForHUN(4500);
+                            }
+
+                            // Screen recording & VirtualDisplay lifecycle resilience
+                            if (line.contains("screenrecorder") || line.contains("ScreenRecorder") || line.contains("MediaProjection")) {
+                                scheduleRebindRetry();
                             }
 
                             // Notification Event Detection — only match events log notification_enqueue
