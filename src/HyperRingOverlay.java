@@ -291,6 +291,8 @@ public class HyperRingOverlay {
     private static Spring springR;
     private static Spring springContentAlpha;
     private static Spring morphSpring;
+    private static Spring crossfadeSpring;
+    private static int previousIsland = STATE_IDLE;
 
     // Visualizer simulation bars
     private static float[] barHeights = new float[]{0.3f, 0.7f, 0.5f, 0.9f};
@@ -400,6 +402,7 @@ public class HyperRingOverlay {
         springR = new Spring(cutoutRadius, springStiffness, springDamping);
         springContentAlpha = new Spring(0.0f, 520f, 1.05f);
         morphSpring = new Spring(0.0f, 320f, 0.82f);
+        crossfadeSpring = new Spring(1.0f, 480f, 0.92f);
 
         initGraphics();
         registerSystemReceivers();
@@ -493,11 +496,13 @@ public class HyperRingOverlay {
     private static void resolveDisplayMetrics() {
         try {
             DisplayMetrics realMetrics = new DisplayMetrics();
-            if (defaultDisplay != null) {
+            if (defaultDisplay != null && defaultDisplay.getDisplayId() == Display.DEFAULT_DISPLAY) {
                 defaultDisplay.getRealMetrics(realMetrics);
-                displayWidthPx = realMetrics.widthPixels;
-                displayHeightPx = realMetrics.heightPixels;
-                displayDensity = realMetrics.density;
+                if (realMetrics.widthPixels > 0 && realMetrics.heightPixels > 0) {
+                    displayWidthPx = realMetrics.widthPixels;
+                    displayHeightPx = realMetrics.heightPixels;
+                    displayDensity = realMetrics.density;
+                }
             }
         } catch (Throwable ignored) {}
 
@@ -713,18 +718,22 @@ public class HyperRingOverlay {
                 dm.registerDisplayListener(new DisplayManager.DisplayListener() {
                     @Override
                     public void onDisplayAdded(int displayId) {
+                        // Ignore non-default virtual display signals during MediaProjection setup
+                        if (displayId != Display.DEFAULT_DISPLAY) return;
                         forceDisplayRebindNow();
                         scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayRemoved(int displayId) {
+                        if (displayId != Display.DEFAULT_DISPLAY) return;
                         forceDisplayRebindNow();
                         scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayChanged(int displayId) {
+                        if (displayId != Display.DEFAULT_DISPLAY) return;
                         forceDisplayRebindNow();
                         scheduleRebindRetry();
                     }
@@ -873,6 +882,16 @@ public class HyperRingOverlay {
     }
 
     private static void attachWindow() {
+        if (defaultDisplay == null || defaultDisplay.getDisplayId() != Display.DEFAULT_DISPLAY) {
+            DisplayManager dm = (DisplayManager) sysContext.getSystemService(Context.DISPLAY_SERVICE);
+            if (dm != null) {
+                defaultDisplay = dm.getDisplay(Display.DEFAULT_DISPLAY);
+            }
+        }
+        if (defaultDisplay != null) {
+            Context dCtx = sysContext.createDisplayContext(defaultDisplay);
+            if (dCtx != null) context = dCtx;
+        }
         windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         if (windowManager == null) return;
 
@@ -1101,6 +1120,24 @@ public class HyperRingOverlay {
         }
     }
 
+    private static void syncMediaPlaybackState() {
+        try {
+            if (activeMediaController != null) {
+                PlaybackState ps = activeMediaController.getPlaybackState();
+                if (ps != null) {
+                    mediaTrackPosition = ps.getPosition();
+                    mediaPositionUpdateTime = ps.getLastPositionUpdateTime();
+                    isMediaPlaying = (ps.getState() == PlaybackState.STATE_PLAYING);
+                }
+                MediaMetadata md = activeMediaController.getMetadata();
+                if (md != null) {
+                    long dur = md.getLong(MediaMetadata.METADATA_KEY_DURATION);
+                    if (dur > 0) mediaTrackDuration = dur;
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
     private static void expandCard() {
         if (isExpanded) return;
         isExpanded = true;
@@ -1109,6 +1146,9 @@ public class HyperRingOverlay {
             if (expandTimeoutMs > 0 && !previewLock) {
                 handler.postDelayed(autoCollapseRunnable, Math.max(6000, expandTimeoutMs));
             }
+        }
+        if (currentIsland == STATE_MEDIA) {
+            syncMediaPlaybackState();
         }
         // Unified single-phase morphing physics: organic spring curve (stiffness ~320, damping ~0.82)
         if (morphSpring != null) {
@@ -1291,8 +1331,6 @@ public class HyperRingOverlay {
 
     private static void renderCompactContent(Canvas canvas, float curW, float curH, float alpha) {
         float centerY = curH / 2.0f;
-        int intAlpha = Math.min(255, Math.max(0, (int) (alpha * 255)));
-
         float holeR = cutoutRadius;
         float iconCenterX;
         float textCenterX;
@@ -1317,7 +1355,30 @@ public class HyperRingOverlay {
             textAlign = Paint.Align.CENTER;
         }
 
-        int renderType = (activeIslandType != STATE_IDLE ? activeIslandType : currentIsland);
+        int curType = (activeIslandType != STATE_IDLE ? activeIslandType : currentIsland);
+        boolean isCrossfading = (previousIsland != STATE_IDLE && previousIsland != curType && crossfadeSpring != null && crossfadeSpring.isMoving());
+
+        if (isCrossfading) {
+            float t = Math.max(0.0f, Math.min(1.0f, crossfadeSpring.current));
+            float easeT = t * t * (3.0f - 2.0f * t);
+            float outAlpha = alpha * (1.0f - easeT);
+            float inAlpha = alpha * easeT;
+
+            if (outAlpha > 0.02f) {
+                drawCompactState(canvas, previousIsland, curW, curH, outAlpha, iconCenterX, textCenterX, centerY, textAlign);
+            }
+            if (inAlpha > 0.02f) {
+                drawCompactState(canvas, curType, curW, curH, inAlpha, iconCenterX, textCenterX, centerY, textAlign);
+            }
+        } else {
+            drawCompactState(canvas, curType, curW, curH, alpha, iconCenterX, textCenterX, centerY, textAlign);
+        }
+    }
+
+    private static void drawCompactState(Canvas canvas, int renderType, float curW, float curH, float alpha,
+                                         float iconCenterX, float textCenterX, float centerY, Paint.Align textAlign) {
+        int intAlpha = Math.min(255, Math.max(0, (int) (alpha * 255)));
+        if (intAlpha <= 0) return;
 
         if (renderType == STATE_CHARGING) {
             paintAccentGreen.setAlpha(intAlpha);
@@ -1490,7 +1551,7 @@ public class HyperRingOverlay {
 
         } else if (renderType == STATE_MEDIA) {
             float artSize = dpToPx(48);
-            float artLeft = dpToPx(22);
+            float artLeft = dpToPx(28);
             float artTop = isFloatingBelow ? dpToPx(20) : Math.max(dpToPx(20), baseTopY);
             float curR = (springR != null) ? springR.current : dpToPx(24);
 
@@ -1612,10 +1673,11 @@ public class HyperRingOverlay {
 
                 long curPos = mediaTrackPosition;
                 if (isMediaPlaying && mediaPositionUpdateTime > 0) {
-                    curPos += (SystemClock.elapsedRealtime() - mediaPositionUpdateTime);
+                    long elapsed = SystemClock.elapsedRealtime() - mediaPositionUpdateTime;
+                    if (elapsed > 0) curPos += elapsed;
                 }
                 if (mediaTrackDuration > 0 && curPos > mediaTrackDuration) curPos = mediaTrackDuration;
-                float progressFraction = (mediaTrackDuration > 0) ? Math.max(0f, Math.min(1f, (float) curPos / (float) mediaTrackDuration)) : 0.42f;
+                float progressFraction = (mediaTrackDuration > 0) ? Math.max(0f, Math.min(1f, (float) curPos / (float) mediaTrackDuration)) : 0f;
 
                 paintTrack.setAlpha(Math.min(255, (int) (seekbarAlpha * 45)));
                 artRectF.set(barLeft, barY, barLeft + barW, barY + barH);
@@ -1626,7 +1688,16 @@ public class HyperRingOverlay {
                 paintProgress.setAlpha(seekbarIntAlpha);
                 artRectF.set(barLeft, barY, barLeft + (barW * progressFraction), barY + barH);
                 canvas.drawRoundRect(artRectF, barH / 2f, barH / 2f, paintProgress);
-                canvas.drawCircle(barLeft + (barW * progressFraction), barY + barH / 2f, dpToPx(4.5f), paintProgress);
+
+                // Stabilized progress thumb: render thumb at alpha 1.0 only once playback position is stabilized and card is fully expanded
+                boolean isPositionStabilized = (mediaTrackDuration > 0 || !isMediaPlaying) && mediaPositionUpdateTime > 0;
+                float thumbExpandFactor = Math.max(0.0f, Math.min(1.0f, (expandProgress - 0.85f) / 0.15f));
+                float thumbAlpha = isPositionStabilized ? (seekbarAlpha * thumbExpandFactor * thumbExpandFactor) : 0f;
+                int thumbIntAlpha = Math.min(255, Math.max(0, (int) (thumbAlpha * 255)));
+                if (thumbIntAlpha > 0 && mediaTrackDuration > 0) {
+                    paintProgress.setAlpha(thumbIntAlpha);
+                    canvas.drawCircle(barLeft + (barW * progressFraction), barY + barH / 2f, dpToPx(4.5f), paintProgress);
+                }
 
                 if (mediaTrackDuration > 0) {
                     paintTextTertiary.setTextSize(spToPx(10));
@@ -2025,6 +2096,15 @@ public class HyperRingOverlay {
                 anyMoving = swMoving || shMoving || srMoving || saMoving;
             }
 
+            boolean cfMoving = false;
+            if (crossfadeSpring != null && crossfadeSpring.isMoving()) {
+                cfMoving = crossfadeSpring.update(dt);
+                if (!cfMoving || crossfadeSpring.isAtEquilibrium()) {
+                    previousIsland = STATE_IDLE;
+                }
+            }
+            anyMoving = anyMoving || cfMoving;
+
             if (currentIsland == STATE_MEDIA && isMediaPlaying && !isExpanded && mediaShowWaveform && (now - lastWaveStep > 60)) {
                 stepAudioBars();
                 lastWaveStep = now;
@@ -2124,6 +2204,9 @@ public class HyperRingOverlay {
                 if (isExpanded) {
                     collapseCard();
                     if (handler != null && expandTimeoutMs > 0) handler.postDelayed(this, expandTimeoutMs);
+                } else if (currentIsland == STATE_VOLUME && isMediaPlaying && enableMedia) {
+                    // Smoothly morph cross-fade back to active media pill instead of collapsing into hole and reopening
+                    showIsland(STATE_MEDIA, 0);
                 } else {
                     startCollapse();
                 }
@@ -2159,6 +2242,21 @@ public class HyperRingOverlay {
                 if (isHUNTucked && state != STATE_CALIBRATION) return;
 
                 boolean wakingFromIdle = (currentIsland == STATE_IDLE || isCollapsing);
+                int oldState = currentIsland;
+                if (!wakingFromIdle && oldState != state && oldState != STATE_IDLE) {
+                    previousIsland = oldState;
+                    if (crossfadeSpring != null) {
+                        crossfadeSpring.snapTo(0.0f);
+                        crossfadeSpring.setParameters(480f, 0.92f); // fast morph cross-fade (~160ms)
+                        crossfadeSpring.setTarget(1.0f);
+                    }
+                } else if (wakingFromIdle) {
+                    previousIsland = STATE_IDLE;
+                    if (crossfadeSpring != null) {
+                        crossfadeSpring.snapTo(1.0f);
+                    }
+                }
+
                 currentIsland = state;
                 activeIslandType = state;
                 isCollapsing = false;
@@ -2215,6 +2313,11 @@ public class HyperRingOverlay {
                     handler.removeCallbacks(audioThrottleRunnable);
                 }
                 if (isCollapsing || currentIsland == STATE_IDLE) return;
+                if (!isExpanded && currentIsland == STATE_VOLUME && isMediaPlaying && enableMedia) {
+                    // Smoothly morph cross-fade back to active media pill instead of collapsing into hole and reopening
+                    showIsland(STATE_MEDIA, 0);
+                    return;
+                }
                 isCollapsing = true;
                 isExpanded = false;
 
@@ -2730,10 +2833,10 @@ public class HyperRingOverlay {
                                 tuckForHUN(4500);
                             }
 
-                            // Screen recording & VirtualDisplay lifecycle resilience
-                            if (line.contains("screenrecorder") || line.contains("ScreenRecorder") || line.contains("MediaProjection")) {
-                                scheduleRebindRetry();
-                            }
+                            // Screen recording & VirtualDisplay lifecycle resilience:
+                            // Ignore non-default virtual display invalidation signals during MediaProjection setup.
+                            // The overlay view hierarchy is strictly bound to the default root display context,
+                            // preventing surface detachment during screen recorder initialization.
 
                             // Notification Event Detection — only match events log notification_enqueue
                             if (enableNotifications && line.contains("notification_enqueue")) {
