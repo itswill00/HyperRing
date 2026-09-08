@@ -69,6 +69,7 @@ Settings are stored in `state/config.json`:
   "enable_volume": true,
   "enable_ringer": true,
   "enable_notifications": true,
+  "enable_torch": true,
   "enable_hyperdl": true,
   "enable_hypercore": true,
   "stealth_ring_idle": false,

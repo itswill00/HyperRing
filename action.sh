@@ -92,9 +92,14 @@ echo "Restarting HyperRing service..."
 cmd appops set --uid 0 SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
 cmd appops set --uid 1000 SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
 cmd appops set --uid 2000 SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+cmd appops set --uid 0 CAMERA allow 2>/dev/null || true
+cmd appops set --uid 1000 CAMERA allow 2>/dev/null || true
+cmd appops set --uid 2000 CAMERA allow 2>/dev/null || true
 appops set android SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
 appops set com.android.shell SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
+appops set com.android.shell CAMERA allow 2>/dev/null || true
 pm grant com.android.shell android.permission.SYSTEM_ALERT_WINDOW 2>/dev/null || true
+pm grant com.android.shell android.permission.CAMERA 2>/dev/null || true
 
 for p in $(pgrep -f "com.hyperring.HyperRingOverlay" 2>/dev/null); do
     if [ "$p" != "$$" ] && [ "$p" != "$PPID" ]; then

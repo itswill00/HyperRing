@@ -18,6 +18,7 @@ import android.os.BatteryManager;
 import android.os.FileObserver;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.Choreographer;
@@ -85,6 +86,7 @@ public class HyperRingOverlay {
     private static boolean enableVolume        = true;
     private static boolean enableRinger        = true;
     private static boolean enableNotifications = true;
+    private static boolean enableTorch         = true;
     private static boolean enableHyperDL       = true;
     private static boolean enableHyperCore     = true;
     private static boolean stealthRingIdle     = false;
@@ -120,12 +122,12 @@ public class HyperRingOverlay {
     private static volatile boolean isLoopRunning = false;
 
     // Telemetry: Battery & Power
-    private static volatile int batteryPct = 100;
+    private static volatile int batteryPct = -1;
     private static volatile boolean isCharging = false;
-    private static volatile String chargeWattStr = "33W";
-    private static volatile String chargeCurrentStr = "4200mA";
-    private static volatile String batteryTempStr = "36.5°C";
-    private static volatile String hyperCoreProfile = "Interactive";
+    private static volatile String chargeWattStr = "0.0W";
+    private static volatile String chargeCurrentStr = "0mA";
+    private static volatile String batteryTempStr = "";
+    private static volatile String hyperCoreProfile = "Default";
 
     // Telemetry: Media
     private static volatile String mediaTitle = "No active playback";
@@ -133,10 +135,15 @@ public class HyperRingOverlay {
     private static volatile boolean isMediaPlaying = false;
 
     // Telemetry: Volume
-    private static volatile int volumePercent = 65;
+    private static volatile int volumePercent = 50;
+    private static volatile int lastVolumeLevel = -1;
     
     // Telemetry: Ringer
     private static volatile String ringerLabel = "Ring";
+    private static volatile int lastRingerLevel = -1;
+
+    // Telemetry: Torch
+    private static volatile boolean isTorchActive = false;
     
     // Telemetry: Notification
     private static volatile String notifAppName = "Notification";
@@ -303,6 +310,13 @@ public class HyperRingOverlay {
         grantOverlayPermissions();
         resolveDisplayMetrics();
         readConfig();
+
+        // Direct hardware telemetry and system state initialization
+        checkScreenInteractive();
+        queryBatteryHardware();
+        initAudioTelemetry();
+        queryTorchStatusNative();
+        queryMediaSessionNative();
 
         float initD = cutoutRadius * 2.0f;
         float initX = cutoutCenterX - cutoutRadius;
@@ -810,7 +824,9 @@ public class HyperRingOverlay {
                     }
                 }
             } else if (currentIsland == STATE_TORCH) {
-                toggleTorchNative();
+                isExpanded = false;
+                currentIsland = STATE_IDLE;
+                wakeEngineLoop();
                 return;
             }
             isExpanded = false;
@@ -1450,7 +1466,7 @@ public class HyperRingOverlay {
         handler.post(new Runnable() {
             @Override
             public void run() {
-                if (!isLoopRunning && isScreenInteractive) {
+                if (!isLoopRunning && checkScreenInteractive()) {
                     isLoopRunning = true;
                     lastFrameNanos = System.nanoTime();
                     // Before animation starts, ensure window params accommodate the target state
@@ -1785,12 +1801,12 @@ public class HyperRingOverlay {
     }
 
     private static void startBackgroundWorkers() {
-        // Worker 1: Media session & ecosystem status poll
+        // Worker 1: Periodic hardware synchronization & ecosystem telemetry
         workerPool.scheduleWithFixedDelay(new Runnable() {
             @Override
             public void run() {
                 try {
-                    if (!isScreenInteractive) return;
+                    if (!checkScreenInteractive()) return;
 
                     if (new File(triggerPath).exists()) {
                         handler.post(new Runnable() {
@@ -1801,17 +1817,26 @@ public class HyperRingOverlay {
                         });
                     }
 
+                    if (enableCharging) {
+                        queryBatteryHardware();
+                    }
                     if (enableMedia) {
                         queryMediaSessionNative();
+                    }
+                    if (enableTorch) {
+                        queryTorchStatusNative();
+                    }
+                    if (enableVolume) {
+                        queryVolumeFallback();
+                    }
+                    if (enableRinger) {
+                        queryRingerFallback();
                     }
                     if (enableHyperDL) {
                         queryHyperDLStatusNative();
                     }
-                    if (isCharging) {
-                        readBatteryHardwareTelemetry();
-                        if (enableHyperCore) {
-                            readHyperCoreStatusNative();
-                        }
+                    if (enableHyperCore && isCharging) {
+                        readHyperCoreStatusNative();
                     }
 
                     // Auto state transitions (priority-based)
@@ -1819,8 +1844,9 @@ public class HyperRingOverlay {
                         return;
                     }
                     if (currentIsland == STATE_CHARGING && isCharging) {
-                        // Keep charging state
-                    } else if (currentIsland == STATE_VOLUME || currentIsland == STATE_RINGER || currentIsland == STATE_TORCH || currentIsland == STATE_NOTIFICATION) {
+                        // Maintain charging state
+                    } else if (currentIsland == STATE_VOLUME || currentIsland == STATE_RINGER 
+                            || currentIsland == STATE_TORCH || currentIsland == STATE_NOTIFICATION) {
                         // Transient states wait for their timeouts
                     } else if (isHyperDLActive && enableHyperDL) {
                         if (currentIsland != STATE_HYPERDL && currentIsland != STATE_CALIBRATION) {
@@ -1843,76 +1869,317 @@ public class HyperRingOverlay {
                     }
                 } catch (Throwable ignored) {}
             }
-        }, 1000, 1500, TimeUnit.MILLISECONDS);
+        }, 300, 800, TimeUnit.MILLISECONDS);
 
-        // Worker 2: Real-time notification logcat reader
+        // Worker 2: Real-time event streaming via logcat (Volume, Media Keys, Notifications)
         workerPool.execute(new Runnable() {
             @Override
             public void run() {
-                try {
-                    java.lang.Process p = Runtime.getRuntime().exec(new String[]{"logcat", "-b", "events", "-s", "notification_enqueue"});
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
-                    String line;
-                    Pattern flagPattern = Pattern.compile("flags=0x([0-9a-fA-F]+)");
-                    while ((line = reader.readLine()) != null) {
-                        if (!enableNotifications || !isScreenInteractive) continue;
-                        if (line.contains("notification_enqueue") || line.contains("Notification(")) {
-                            Matcher fm = flagPattern.matcher(line);
-                            if (fm.find()) {
-                                try {
-                                    int flags = Integer.parseInt(fm.group(1), 16);
-                                    // Skip ongoing / foreground service / group summaries
-                                    if ((flags & (0x02 | 0x40 | 0x200)) != 0) {
-                                        continue;
-                                    }
-                                } catch (Throwable ignored) {}
-                            }
+                while (true) {
+                    java.lang.Process p = null;
+                    try {
+                        p = Runtime.getRuntime().exec(new String[]{
+                                "logcat", "-v", "brief", "-s",
+                                "notification_enqueue:I",
+                                "AS.AudioService:D",
+                                "MediaSessionService:D",
+                                "*:S"
+                        });
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                        String line;
+                        Pattern flagPattern = Pattern.compile("flags=0x([0-9a-fA-F]+)");
 
-                            int idx = line.indexOf("[");
-                            if (idx != -1) {
-                                String body = line.substring(idx + 1);
-                                String[] parts = body.split(",");
-                                if (parts.length >= 3) {
-                                    String pkg = parts[2].trim();
-                                    if (isUserFacingPackage(pkg)) {
-                                        notifAppName = resolveFriendlyAppName(pkg);
-                                        queryNotificationDetailsAsync(pkg);
-                                        currentIsland = STATE_NOTIFICATION;
+                        while ((line = reader.readLine()) != null) {
+                            if (!checkScreenInteractive()) continue;
+
+                            // Volume Event Detection
+                            if (enableVolume && (line.contains("adjustStreamVolume") 
+                                    || line.contains("Volume controller visible") 
+                                    || line.contains("dispatchVolumeKeyEvent"))) {
+                                AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+                                if (am != null) {
+                                    int stream = AudioManager.STREAM_MUSIC;
+                                    int cur = am.getStreamVolume(stream);
+                                    int max = am.getStreamMaxVolume(stream);
+                                    volumePercent = Math.round((cur / (float) Math.max(1, max)) * 100f);
+                                    lastVolumeLevel = cur;
+
+                                    if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                                        currentIsland = STATE_VOLUME;
                                         isExpanded = false;
-                                        expandCollapseTime = SystemClock.uptimeMillis() + 3200;
+                                        expandCollapseTime = SystemClock.uptimeMillis() + 2000;
                                         wakeEngineLoop();
                                     }
                                 }
                             }
+
+                            // Notification Event Detection
+                            if (enableNotifications && (line.contains("notification_enqueue") || line.contains("Notification("))) {
+                                Matcher fm = flagPattern.matcher(line);
+                                if (fm.find()) {
+                                    try {
+                                        int flags = Integer.parseInt(fm.group(1), 16);
+                                        // Skip ongoing foreground services (0x02 = ONGOING_EVENT, 0x40 = FOREGROUND_SERVICE)
+                                        if ((flags & (0x02 | 0x40)) != 0) {
+                                            continue;
+                                        }
+                                    } catch (Throwable ignored) {}
+                                }
+
+                                int idx = line.indexOf("[");
+                                if (idx != -1) {
+                                    String body = line.substring(idx + 1);
+                                    String[] parts = body.split(",");
+                                    if (parts.length >= 3) {
+                                        String pkg = parts[2].trim();
+                                        if (isUserFacingPackage(pkg)) {
+                                            notifAppName = resolveFriendlyAppName(pkg);
+                                            notifTitle = notifAppName;
+                                            notifContent = "New notification";
+                                            queryNotificationDetailsAsync(pkg);
+                                            if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                                                currentIsland = STATE_NOTIFICATION;
+                                                isExpanded = false;
+                                                expandCollapseTime = SystemClock.uptimeMillis() + 3500;
+                                                wakeEngineLoop();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    } finally {
+                        if (p != null) {
+                            try { p.destroy(); } catch (Throwable ignored) {}
                         }
                     }
-                } catch (Throwable ignored) {}
+                    try {
+                        Thread.sleep(2000);
+                    } catch (InterruptedException ignored) {}
+                }
             }
         });
     }
 
+    private static String readFirstLineFromFile(String path) {
+        File f = new File(path);
+        if (!f.exists()) return null;
+        try (BufferedReader br = new BufferedReader(new FileReader(f))) {
+            return br.readLine();
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private static boolean checkScreenInteractive() {
+        try {
+            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                boolean active = pm.isInteractive();
+                if (active != isScreenInteractive) {
+                    isScreenInteractive = active;
+                    if (active) {
+                        lastFrameNanos = System.nanoTime();
+                        wakeEngineLoop();
+                    }
+                }
+                return active;
+            }
+        } catch (Throwable ignored) {}
+        return true;
+    }
+
+    private static void initAudioTelemetry() {
+        try {
+            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                int cur = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+                volumePercent = Math.round((cur / (float) Math.max(1, max)) * 100f);
+                lastVolumeLevel = cur;
+
+                lastRingerLevel = am.getRingerMode();
+                if (lastRingerLevel == AudioManager.RINGER_MODE_SILENT) ringerLabel = "Silent";
+                else if (lastRingerLevel == AudioManager.RINGER_MODE_VIBRATE) ringerLabel = "Vibrate";
+                else ringerLabel = "Ring";
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void queryBatteryHardware() {
+        try {
+            long cap = readLongFromFile("/sys/class/power_supply/battery/capacity");
+            if (cap > 0 && cap <= 100) {
+                batteryPct = (int) cap;
+            } else {
+                long bmsCap = readLongFromFile("/sys/class/power_supply/bms/capacity");
+                if (bmsCap > 0 && bmsCap <= 100) {
+                    batteryPct = (int) bmsCap;
+                }
+            }
+
+            String status = readFirstLineFromFile("/sys/class/power_supply/battery/status");
+            long usbOnline = readLongFromFile("/sys/class/power_supply/usb/online");
+            boolean chargingNow = (status != null && (status.equalsIgnoreCase("Charging") || status.equalsIgnoreCase("Full"))) || usbOnline == 1;
+
+            if (chargingNow && !isCharging && enableCharging) {
+                isCharging = true;
+                readBatteryHardwareTelemetry();
+                triggerChargingEvent();
+            } else if (!chargingNow && isCharging) {
+                isCharging = false;
+                if (currentIsland == STATE_CHARGING) {
+                    if (isMediaPlaying && enableMedia) {
+                        currentIsland = STATE_MEDIA;
+                    } else if (isHyperDLActive && enableHyperDL) {
+                        currentIsland = STATE_HYPERDL;
+                    } else {
+                        currentIsland = STATE_IDLE;
+                    }
+                    isExpanded = false;
+                    wakeEngineLoop();
+                }
+            } else if (chargingNow && isCharging) {
+                readBatteryHardwareTelemetry();
+                if (currentIsland == STATE_CHARGING) wakeEngineLoop();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void queryTorchStatusNative() {
+        try {
+            boolean active = false;
+            // 1. MediaTek sysfs fast path
+            File mtkTorch = new File("/sys/devices/virtual/flashlight_core/flashlight/flashlight_torch");
+            if (mtkTorch.exists()) {
+                try (BufferedReader br = new BufferedReader(new FileReader(mtkTorch))) {
+                    br.readLine(); // skip header
+                    String line = br.readLine();
+                    if (line != null) {
+                        String[] tok = line.trim().split("\\s+");
+                        if (tok.length >= 4 && !"0".equals(tok[3])) {
+                            active = true;
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            } else {
+                // 2. Generic sysfs nodes
+                for (String p : new String[]{
+                        "/sys/class/leds/flashlight/brightness",
+                        "/sys/class/leds/torch-light/brightness",
+                        "/sys/class/leds/torch-light0/brightness"}) {
+                    File lf = new File(p);
+                    if (lf.exists() && readLongFromFile(p) > 0) {
+                        active = true;
+                        break;
+                    }
+                }
+            }
+
+            if (active && !isTorchActive) {
+                isTorchActive = true;
+                if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                    currentIsland = STATE_TORCH;
+                    isExpanded = false;
+                    expandCollapseTime = SystemClock.uptimeMillis() + 3000;
+                    wakeEngineLoop();
+                }
+            } else if (!active && isTorchActive) {
+                isTorchActive = false;
+                if (currentIsland == STATE_TORCH) {
+                    if (isMediaPlaying && enableMedia) {
+                        currentIsland = STATE_MEDIA;
+                    } else {
+                        currentIsland = STATE_IDLE;
+                    }
+                    isExpanded = false;
+                    wakeEngineLoop();
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void queryVolumeFallback() {
+        try {
+            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                int stream = AudioManager.STREAM_MUSIC;
+                int cur = am.getStreamVolume(stream);
+                if (lastVolumeLevel != -1 && cur != lastVolumeLevel) {
+                    int max = am.getStreamMaxVolume(stream);
+                    volumePercent = Math.round((cur / (float) Math.max(1, max)) * 100f);
+                    if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                        currentIsland = STATE_VOLUME;
+                        isExpanded = false;
+                        expandCollapseTime = SystemClock.uptimeMillis() + 2000;
+                        wakeEngineLoop();
+                    }
+                }
+                lastVolumeLevel = cur;
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void queryRingerFallback() {
+        try {
+            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                int mode = am.getRingerMode();
+                if (lastRingerLevel != -1 && mode != lastRingerLevel) {
+                    if (mode == AudioManager.RINGER_MODE_SILENT) ringerLabel = "Silent";
+                    else if (mode == AudioManager.RINGER_MODE_VIBRATE) ringerLabel = "Vibrate";
+                    else ringerLabel = "Ring";
+
+                    if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                        currentIsland = STATE_RINGER;
+                        isExpanded = false;
+                        expandCollapseTime = SystemClock.uptimeMillis() + 2200;
+                        wakeEngineLoop();
+                    }
+                }
+                lastRingerLevel = mode;
+            }
+        } catch (Throwable ignored) {}
+    }
+
     private static boolean isUserFacingPackage(String pkg) {
         if (pkg == null || pkg.isEmpty()) return false;
-        if (pkg.equals("android") || pkg.contains("systemui") || pkg.contains("misound") 
-                || pkg.contains("securitycenter") || pkg.contains("powerkeeper") 
-                || pkg.contains("googlequicksearchbox") || pkg.contains("daemon")) {
+        String p = pkg.toLowerCase(Locale.US);
+        if (p.equals("android") || p.contains("systemui") || p.contains("misound") 
+                || p.contains("securitycenter") || p.contains("powerkeeper") 
+                || p.contains("googlequicksearchbox") || p.contains("daemon")
+                || p.contains("gms") || p.contains("service")
+                || p.contains("provider") || p.contains("download.manager")
+                || p.contains("carrier") || p.contains("telephony")
+                || p.contains("bluetooth") || p.contains("backup")
+                || p.contains("overlay")) {
             return false;
         }
         return true;
     }
 
     private static String resolveFriendlyAppName(String pkg) {
-        if (pkg.contains("whatsapp")) return "WhatsApp";
-        if (pkg.contains("telegram")) return "Telegram";
-        if (pkg.contains("instagram")) return "Instagram";
-        if (pkg.contains("twitter") || pkg.contains("x.android")) return "X";
-        if (pkg.contains("discord")) return "Discord";
-        if (pkg.contains("youtube")) return "YouTube";
-        if (pkg.contains("spotify")) return "Spotify";
-        if (pkg.contains("gmail") || pkg.contains("email")) return "Mail";
-        if (pkg.contains("messaging") || pkg.contains("mms")) return "Messages";
+        String p = pkg.toLowerCase(Locale.US);
+        if (p.contains("whatsapp")) return "WhatsApp";
+        if (p.contains("telegram")) return "Telegram";
+        if (p.contains("instagram")) return "Instagram";
+        if (p.contains("twitter") || p.contains("x.android")) return "X";
+        if (p.contains("discord")) return "Discord";
+        if (p.contains("youtube")) return "YouTube";
+        if (p.contains("spotify")) return "Spotify";
+        if (p.contains("tiktok") || p.contains("trill")) return "TikTok";
+        if (p.contains("gmail") || p.contains("email")) return "Mail";
+        if (p.contains("messaging") || p.contains("mms")) return "Messages";
+        if (p.contains("reddit")) return "Reddit";
+        if (p.contains("facebook") || p.contains("katana")) return "Facebook";
+        if (p.contains("orca")) return "Messenger";
+        if (p.contains("netflix")) return "Netflix";
         int dot = pkg.lastIndexOf(".");
-        return dot != -1 ? pkg.substring(dot + 1) : pkg;
+        String name = dot != -1 ? pkg.substring(dot + 1) : pkg;
+        if (name.length() > 0) {
+            return Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        }
+        return name;
     }
 
     private static void queryNotificationDetailsAsync(final String pkg) {
@@ -1962,28 +2229,32 @@ public class HyperRingOverlay {
             AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
             boolean audioActive = am != null && am.isMusicActive();
 
-            if (!audioActive && !isMediaPlaying) {
-                return;
-            }
-
             java.lang.Process p = Runtime.getRuntime().exec(new String[]{"dumpsys", "media_session"});
             BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
             String line;
             boolean foundPlaying = false;
+            boolean foundPaused = false;
             String tempTitle = "";
             String tempArtist = "";
 
             while ((line = reader.readLine()) != null) {
                 line = line.trim();
-                if (line.startsWith("state=PlaybackState")) {
-                    if (line.contains("state=3") || line.contains("STATE_PLAYING")) {
+                if (line.contains("state=PlaybackState") || line.contains("PlaybackState {state=")) {
+                    if (line.contains("state=3") || line.contains("STATE_PLAYING") || line.contains("state=PLAYING")) {
                         foundPlaying = true;
+                    } else if (line.contains("state=2") || line.contains("STATE_PAUSED") || line.contains("state=PAUSED")) {
+                        foundPaused = true;
                     }
-                } else if (line.startsWith("description=")) {
-                    String desc = line.substring(12);
+                } else if (line.contains("description=")) {
+                    int dIdx = line.indexOf("description=");
+                    String desc = line.substring(dIdx + 12).trim();
                     String[] parts = desc.split(",");
-                    if (parts.length > 0) tempTitle = parts[0].trim();
-                    if (parts.length > 1) tempArtist = parts[1].trim();
+                    if (parts.length > 0 && !parts[0].trim().isEmpty()) {
+                        tempTitle = parts[0].trim();
+                    }
+                    if (parts.length > 1 && !parts[1].trim().isEmpty()) {
+                        tempArtist = parts[1].trim();
+                    }
                 }
                 if (foundPlaying && !tempTitle.isEmpty()) {
                     break;
@@ -1993,9 +2264,10 @@ public class HyperRingOverlay {
             p.destroy();
 
             boolean prevPlay = isMediaPlaying;
-            isMediaPlaying = foundPlaying || audioActive;
-            if (foundPlaying) {
-                if (!tempTitle.isEmpty()) mediaTitle = tempTitle;
+            boolean nowPlaying = foundPlaying || (audioActive && !foundPaused);
+            isMediaPlaying = nowPlaying;
+            if (!tempTitle.isEmpty()) {
+                mediaTitle = tempTitle;
                 if (!tempArtist.isEmpty()) mediaArtist = tempArtist;
             }
 
@@ -2032,32 +2304,6 @@ public class HyperRingOverlay {
         }).start();
     }
 
-    private static void toggleTorchNative() {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    CameraManager cm = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
-                    if (cm != null) {
-                        String[] ids = cm.getCameraIdList();
-                        if (ids != null && ids.length > 0) {
-                            try {
-                                cm.setTorchMode("0", currentIsland != STATE_TORCH);
-                                return;
-                            } catch (Throwable t) {
-                                for (String id : ids) {
-                                    try {
-                                        cm.setTorchMode(id, currentIsland != STATE_TORCH);
-                                        return;
-                                    } catch (Throwable ignored) {}
-                                }
-                            }
-                        }
-                    }
-                } catch (Throwable ignored) {}
-            }
-        }).start();
-    }
 
     private static void queryHyperDLStatusNative() {
         File f = new File("/data/local/tmp/hyperdl_status.json");
@@ -2091,6 +2337,11 @@ public class HyperRingOverlay {
 
     private static void readBatteryHardwareTelemetry() {
         try {
+            long cap = readLongFromFile("/sys/class/power_supply/battery/capacity");
+            if (cap > 0 && cap <= 100) {
+                batteryPct = (int) cap;
+            }
+
             long currentUa = readLongFromFile("/sys/class/power_supply/battery/current_now");
             long voltageUv = readLongFromFile("/sys/class/power_supply/battery/voltage_now");
             long tempTenths = readLongFromFile("/sys/class/power_supply/battery/temp");
@@ -2106,7 +2357,7 @@ public class HyperRingOverlay {
                 double watt = currentA * voltageV;
                 int currentMa = (int) Math.round(Math.abs(currentUa) / 1000.0);
 
-                if (watt > 0.5) {
+                if (watt > 0.1) {
                     chargeWattStr = String.format(Locale.US, "%.1fW", watt);
                     chargeCurrentStr = currentMa + "mA";
                 }
@@ -2170,6 +2421,8 @@ public class HyperRingOverlay {
                     sb.append("  \"battery_charging\": ").append(isCharging).append(",\n");
                     sb.append("  \"volume_percent\": ").append(volumePercent).append(",\n");
                     sb.append("  \"ringer_label\": \"").append(ringerLabel).append("\",\n");
+                    sb.append("  \"torch_active\": ").append(isTorchActive).append(",\n");
+                    sb.append("  \"charge_watt\": \"").append(chargeWattStr).append("\",\n");
                     sb.append("  \"hypercore_profile\": \"").append(hyperCoreProfile).append("\",\n");
                     sb.append("  \"hyperdl_active\": ").append(isHyperDLActive).append(",\n");
                     sb.append("  \"hyperdl_speed\": \"").append(hyperDLSpeed).append("\",\n");
@@ -2343,6 +2596,7 @@ public class HyperRingOverlay {
             enableVolume        = parseBool(json, "enable_volume", enableVolume);
             enableRinger        = parseBool(json, "enable_ringer", enableRinger);
             enableNotifications = parseBool(json, "enable_notifications", enableNotifications);
+            enableTorch         = parseBool(json, "enable_torch", enableTorch);
             enableHyperDL       = parseBool(json, "enable_hyperdl", enableHyperDL);
             enableHyperCore     = parseBool(json, "enable_hypercore", enableHyperCore);
             stealthRingIdle     = parseBool(json, "stealth_ring_idle", stealthRingIdle);

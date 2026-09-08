@@ -585,6 +585,23 @@
             </label>
           </div>
 
+          <!-- Flashlight / Torch -->
+          <div class="md3-list-row" @click="toggleConfig('enable_torch')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="power" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Flashlight and torch</div>
+                <div class="row-sub">Indicator on torch state change</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_torch" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
           <!-- HyperDL Engine -->
           <div class="md3-list-row" @click="toggleConfig('enable_hyperdl')">
             <div class="row-left">
@@ -886,6 +903,7 @@ const config = reactive({
   enable_volume: true,
   enable_ringer: true,
   enable_notifications: true,
+  enable_torch: true,
   enable_hyperdl: true,
   enable_hypercore: true,
   stealth_ring_idle: false,
