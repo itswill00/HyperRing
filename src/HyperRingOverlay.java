@@ -146,12 +146,15 @@ public class HyperRingOverlay {
 
     // Telemetry: Torch
     private static volatile boolean isTorchActive = false;
-    
+
     // Telemetry: Notification
     private static volatile String notifAppName = "Notification";
     private static volatile String notifTitle = "";
     private static volatile String notifContent = "";
-    
+    private static volatile long lastNotifTime = 0L;
+    private static volatile String lastNotifPkg = "";
+
+
     // Telemetry: HyperDL
     private static volatile boolean isHyperDLActive = false;
     private static volatile String hyperDLSpeed = "0 MB/s";
@@ -1958,32 +1961,37 @@ public class HyperRingOverlay {
                                 queryMediaSessionNative();
                             }
 
-                            // Notification Event Detection
-                            if (enableNotifications && (line.contains("notification_enqueue") || line.contains("Notification("))) {
+                            // Notification Event Detection — only match events log notification_enqueue
+                            if (enableNotifications && line.contains("notification_enqueue")) {
+                                // Parse: [uid,pid,pkg,id,tag,uid,Notification(... flags=0xNN ...),vis]
                                 Matcher fm = flagPattern.matcher(line);
                                 if (fm.find()) {
                                     try {
                                         int flags = Integer.parseInt(fm.group(1), 16);
-                                        // Skip ongoing foreground services (0x02 = ONGOING_EVENT, 0x40 = FOREGROUND_SERVICE)
-                                        if ((flags & (0x02 | 0x40)) != 0) {
-                                            continue;
-                                        }
+                                        // Skip ongoing (0x02) and foreground service (0x40) notifications
+                                        if ((flags & (0x02 | 0x40)) != 0) continue;
                                     } catch (Throwable ignored) {}
                                 }
 
-                                int idx = line.indexOf("[");
-                                if (idx != -1) {
-                                    String body = line.substring(idx + 1);
+                                int startIdx = line.indexOf("[");
+                                if (startIdx != -1) {
+                                    String body = line.substring(startIdx + 1);
                                     String[] parts = body.split(",");
                                     if (parts.length >= 3) {
                                         String pkg = parts[2].trim();
                                         if (isUserFacingPackage(pkg)) {
-                                            notifAppName = resolveFriendlyAppName(pkg);
-                                            notifTitle = notifAppName;
-                                            notifContent = "New notification";
-                                            queryNotificationDetailsAsync(pkg);
-                                            if (!previewLock && currentIsland != STATE_CALIBRATION) {
-                                                showIsland(STATE_NOTIFICATION, 3500);
+                                            // Debounce: ignore same package within 3s
+                                            long nowMs = SystemClock.uptimeMillis();
+                                            if (nowMs - lastNotifTime > 3000 || !pkg.equals(lastNotifPkg)) {
+                                                lastNotifTime = nowMs;
+                                                lastNotifPkg = pkg;
+                                                notifAppName = resolveFriendlyAppName(pkg);
+                                                notifTitle = notifAppName;
+                                                notifContent = "New notification";
+                                                queryNotificationDetailsAsync(pkg);
+                                                if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                                                    showIsland(STATE_NOTIFICATION, 3500);
+                                                }
                                             }
                                         }
                                     }
@@ -2172,14 +2180,31 @@ public class HyperRingOverlay {
     private static boolean isUserFacingPackage(String pkg) {
         if (pkg == null || pkg.isEmpty()) return false;
         String p = pkg.toLowerCase(Locale.US);
-        if (p.equals("android") || p.contains("systemui") || p.contains("misound") 
-                || p.contains("securitycenter") || p.contains("powerkeeper") 
-                || p.contains("googlequicksearchbox") || p.contains("daemon")
-                || p.contains("gms") || p.contains("service")
-                || p.contains("provider") || p.contains("download.manager")
-                || p.contains("carrier") || p.contains("telephony")
-                || p.contains("bluetooth") || p.contains("backup")
-                || p.contains("overlay")) {
+        // Block system and MIUI infrastructure packages
+        if (p.equals("android")
+                || p.startsWith("com.android.")
+                || p.startsWith("com.miui.")
+                || p.startsWith("com.xiaomi.")
+                || p.startsWith("com.qualcomm.")
+                || p.startsWith("com.mediatek.")
+                || p.contains("systemui")
+                || p.contains("misound")
+                || p.contains("securitycenter")
+                || p.contains("powerkeeper")
+                || p.contains("googlequicksearchbox")
+                || p.contains("gms")
+                || p.contains("gsf")
+                || p.contains("provider")
+                || p.contains("launcher")
+                || p.contains("inputmethod")
+                || p.contains("keyboard")
+                || p.contains("carrier")
+                || p.contains("telephony")
+                || p.contains("bluetooth")
+                || p.contains("backup")
+                || p.contains("overlay")
+                || p.contains("hyperring")
+                || p.contains("termux")) {
             return false;
         }
         return true;
