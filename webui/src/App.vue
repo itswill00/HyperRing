@@ -468,8 +468,50 @@
             </div>
           </div>
 
+          <!-- Card Height -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Card height</span>
+              <span class="stepper-val">{{ config.card_height === 0 ? 'Auto' : `${config.card_height} dp` }}</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepCardHeight(-5)">-</button>
+              <input
+                type="range"
+                min="0"
+                max="220"
+                step="5"
+                v-model.number="config.card_height"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepCardHeight(5)">+</button>
+            </div>
+          </div>
+
+          <!-- Card Top Margin -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Top margin</span>
+              <span class="stepper-val">{{ config.card_y_offset > 0 ? `+${config.card_y_offset}` : config.card_y_offset }} dp</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('card_y_offset', -2, -40, 60)">-</button>
+              <input
+                type="range"
+                min="-40"
+                max="60"
+                step="2"
+                v-model.number="config.card_y_offset"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('card_y_offset', 2, -40, 60)">+</button>
+            </div>
+          </div>
+
           <!-- Card Corner Radius -->
-          <div class="stepper-setting-block" style="margin-bottom: 0;">
+          <div class="stepper-setting-block">
             <div class="stepper-header">
               <span class="stepper-title">Corner radius</span>
               <span class="stepper-val">{{ config.card_radius }} dp</span>
@@ -486,6 +528,29 @@
                 class="slider-range"
               />
               <button type="button" class="step-btn" @click="stepValue('card_radius', 2, 14, 36)">+</button>
+            </div>
+          </div>
+
+          <!-- Card Position Mode -->
+          <div class="preset-row" style="margin-top: 10px; margin-bottom: 2px;">
+            <span class="row-meta-label">Placement mode</span>
+            <div class="segment-container">
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: (config.card_position_mode || 'below') === 'below' }"
+                @click="setCardPositionMode('below')"
+              >
+                Float below
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.card_position_mode === 'cover' }"
+                @click="setCardPositionMode('cover')"
+              >
+                Cover notch
+              </button>
             </div>
           </div>
         </section>
@@ -917,7 +982,10 @@ const config = reactive({
   pill_width: 0,
   pill_height: 0,
   card_width: 0,
+  card_height: 0,
   card_radius: 24,
+  card_y_offset: 0,
+  card_position_mode: 'below',
   enable_media: true,
   enable_charging: true,
   enable_volume: true,
@@ -1167,6 +1235,22 @@ function stepCardWidth(delta) {
     if (config.card_width < 220) config.card_width = 0
   }
   saveConfigDebounced()
+}
+
+function stepCardHeight(delta) {
+  if (config.card_height === 0) {
+    config.card_height = delta > 0 ? 130 : 0
+  } else {
+    config.card_height = Math.max(0, Math.min(220, config.card_height + delta))
+    if (config.card_height < 70) config.card_height = 0
+  }
+  saveConfigDebounced()
+}
+
+function setCardPositionMode(mode) {
+  config.card_position_mode = mode
+  saveConfig()
+  showToast(mode === 'below' ? 'Floating below cutout' : 'Cover status bar mode')
 }
 
 function nudge(dx, dy) {

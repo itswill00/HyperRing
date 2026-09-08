@@ -17,12 +17,22 @@ if [ -d "$PREV_STATE" ]; then
 fi
 
 if [ ! -f "$MODPATH/state/config.json" ]; then
-    cat > "$MODPATH/state/config.json" << 'C_EOF'
+    DEF_X=540
+    DEF_Y=55
+    DEF_R=28
+    WM_SIZE=$(wm size 2>/dev/null | grep -oE '[0-9]+x[0-9]+' | head -n 1)
+    if [ -n "$WM_SIZE" ]; then
+        W=${WM_SIZE%x*}
+        if [ "$W" -gt 0 ]; then
+            DEF_X=$((W / 2))
+        fi
+    fi
+    cat > "$MODPATH/state/config.json" << C_EOF
 {
   "enabled": true,
-  "cutout_x": 540,
-  "cutout_y": 55,
-  "cutout_radius": 28,
+  "cutout_x": $DEF_X,
+  "cutout_y": $DEF_Y,
+  "cutout_radius": $DEF_R,
   "pill_alignment": "center",
   "notch_mode": false,
   "x_offset": 0,
@@ -30,7 +40,10 @@ if [ ! -f "$MODPATH/state/config.json" ]; then
   "pill_width": 0,
   "pill_height": 0,
   "card_width": 0,
+  "card_height": 0,
   "card_radius": 24,
+  "card_y_offset": 0,
+  "card_position_mode": "below",
   "enable_media": true,
   "enable_charging": true,
   "enable_volume": true,
@@ -54,6 +67,7 @@ fi
 chmod 644 "$MODPATH/bin/hyperring.dex"
 chmod 755 "$MODPATH/service.sh"
 chmod 755 "$MODPATH/action.sh"
+chmod 755 "$MODPATH/toggle.sh" 2>/dev/null || true
 chmod 755 "$MODPATH/uninstall.sh"
 chmod 644 "$MODPATH/webroot/index.html" 2>/dev/null || true
 chmod 644 "$MODPATH/module.prop"

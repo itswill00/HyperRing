@@ -65,6 +65,41 @@ case "$1" in
         echo "Sent trigger: $1"
         exit 0
         ;;
+    toggle*)
+        STATE_FILE="$MODDIR/state/config.json"
+        if [ -f "$STATE_FILE" ]; then
+            if grep -qE '"enabled":[ ]*false' "$STATE_FILE"; then
+                sed -i -E 's/"enabled":[ ]*false/"enabled": true/' "$STATE_FILE"
+                echo "preview:off" > "$MODDIR/state/trigger.cmd"
+                echo "HyperRing service: ENABLED"
+            else
+                sed -i -E 's/"enabled":[ ]*true/"enabled": false/' "$STATE_FILE"
+                echo "idle" > "$MODDIR/state/trigger.cmd"
+                echo "HyperRing service: DISABLED"
+            fi
+        else
+            echo "Error: config.json not found"
+        fi
+        exit 0
+        ;;
+    on|enable)
+        STATE_FILE="$MODDIR/state/config.json"
+        if [ -f "$STATE_FILE" ]; then
+            sed -i -E 's/"enabled":[ ]*false/"enabled": true/' "$STATE_FILE"
+            echo "preview:off" > "$MODDIR/state/trigger.cmd"
+            echo "HyperRing service: ENABLED"
+        fi
+        exit 0
+        ;;
+    off|disable)
+        STATE_FILE="$MODDIR/state/config.json"
+        if [ -f "$STATE_FILE" ]; then
+            sed -i -E 's/"enabled":[ ]*true/"enabled": false/' "$STATE_FILE"
+            echo "idle" > "$MODDIR/state/trigger.cmd"
+            echo "HyperRing service: DISABLED"
+        fi
+        exit 0
+        ;;
 esac
 
 echo "Restarting HyperRing service..."

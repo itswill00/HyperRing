@@ -69,15 +69,18 @@ public class HyperRingOverlay {
     private static float displayDensity = 2.75f;
 
     // Geometry configuration
-    private static int cutoutCenterX           = 540;
-    private static int cutoutCenterY           = 55;
-    private static int cutoutRadius            = 28;
+    private static int cutoutCenterX           = 0;
+    private static int cutoutCenterY           = 0;
+    private static int cutoutRadius            = 0;
     private static int xOffset                 = 0;
     private static int yOffset                 = 0;
     private static int customPillWidth         = 0;
     private static int customPillHeight        = 0;
     private static int customCardWidth         = 0;
+    private static int customCardHeight        = 0;
     private static int cardRadius              = 24;
+    private static int cardYOffset             = 0;
+    private static String cardPositionMode     = "below";
     private static String pillAlignment        = "center";
     private static boolean notchMode           = false;
     private static boolean masterEnabled       = true;
@@ -448,6 +451,9 @@ public class HyperRingOverlay {
         }
         if (cutoutCenterY <= 0) {
             cutoutCenterY = Math.max(Math.round(16f * displayDensity), statusBarH / 2);
+        }
+        if (cutoutRadius <= 0) {
+            cutoutRadius = Math.round(11f * displayDensity);
         }
     }
 
@@ -1043,18 +1049,14 @@ public class HyperRingOverlay {
         float holeRelY = (params != null) ? Math.max(0, effCutoutY - params.y) : dpToPx(16);
         float holeR = cutoutRadius;
         boolean isCutoutCenter = !"left".equalsIgnoreCase(pillAlignment) && !"right".equalsIgnoreCase(pillAlignment);
+        boolean isFloatingBelow = !"cover".equalsIgnoreCase(cardPositionMode) && !notchMode;
+        float baseTopY = isFloatingBelow ? dpToPx(16) : (isCutoutCenter ? Math.max(dpToPx(24), holeRelY + holeR + dpToPx(6)) : dpToPx(20));
 
         int renderType = (activeIslandType != STATE_IDLE ? activeIslandType : currentIsland);
 
         if (renderType == STATE_CHARGING) {
             // Elegant Native Layout: Safely clear of camera punch-hole
-            float topY;
-            if (isCutoutCenter) {
-                // Sits with clean breathing room below the punch-hole
-                topY = Math.max(dpToPx(38), holeRelY + holeR + dpToPx(10));
-            } else {
-                topY = dpToPx(24);
-            }
+            float topY = isFloatingBelow ? dpToPx(16) : (isCutoutCenter ? Math.max(dpToPx(38), holeRelY + holeR + dpToPx(10)) : dpToPx(24));
 
             // Row 1: Left header status, Right big percentage
             paintAccentGreen.setAlpha(intAlpha);
@@ -1094,9 +1096,9 @@ public class HyperRingOverlay {
             canvas.drawText(rightSub, curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (renderType == STATE_MEDIA) {
-            float artSize = dpToPx(48);
+            float artSize = Math.min(dpToPx(48), curH - dpToPx(64));
             float artLeft = dpToPx(18);
-            float artTop = isCutoutCenter ? Math.max(dpToPx(18), holeRelY + holeR + dpToPx(4)) : dpToPx(18);
+            float artTop = baseTopY;
 
             // Album art disc
             paintAccentCyan.setAlpha(Math.min(255, (int) (alpha * 38)));
@@ -1140,7 +1142,7 @@ public class HyperRingOverlay {
             drawNextIcon(canvas, nextBtnX, btnY, dpToPx(13), paintIconFill);
 
         } else if (renderType == STATE_VOLUME) {
-            float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
+            float topY = baseTopY;
 
             paintAccentCyan.setAlpha(intAlpha);
             drawSpeakerIcon(canvas, dpToPx(24), topY, dpToPx(14), volumePercent, paintAccentCyan);
@@ -1170,7 +1172,7 @@ public class HyperRingOverlay {
             canvas.drawText(volumePercent == 0 ? "Muted" : "Active", curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (renderType == STATE_RINGER) {
-            float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
+            float topY = baseTopY;
 
             paintAccentAmber.setAlpha(intAlpha);
             drawBellIcon(canvas, dpToPx(24), topY, dpToPx(14), ringerLabel, paintAccentAmber);
@@ -1193,7 +1195,7 @@ public class HyperRingOverlay {
             canvas.drawText(desc, dpToPx(20), descY, paintTextSecondary);
 
         } else if (renderType == STATE_NOTIFICATION) {
-            float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
+            float topY = baseTopY;
 
             paintAccentAmber.setAlpha(intAlpha);
             drawMessageIcon(canvas, dpToPx(24), topY, dpToPx(13), paintAccentAmber);
@@ -1218,7 +1220,7 @@ public class HyperRingOverlay {
             canvas.drawText(truncate(displayContent, 36), dpToPx(20), contentY, paintTextSecondary);
 
         } else if (renderType == STATE_TORCH) {
-            float topY = isCutoutCenter ? Math.max(dpToPx(24), holeRelY + holeR + dpToPx(6)) : dpToPx(24);
+            float topY = baseTopY;
 
             paintAccentAmber.setAlpha(intAlpha);
             drawTorchIcon(canvas, dpToPx(24), topY, dpToPx(14), paintAccentAmber);
@@ -1238,7 +1240,7 @@ public class HyperRingOverlay {
             canvas.drawText("Rear LED illuminated · Tap to toggle", dpToPx(20), descY, paintTextSecondary);
 
         } else if (renderType == STATE_HYPERDL) {
-            float topY = isCutoutCenter ? Math.max(dpToPx(22), holeRelY + holeR + dpToPx(6)) : dpToPx(22);
+            float topY = baseTopY;
 
             paintAccentCyan.setAlpha(intAlpha);
             drawDownloadIcon(canvas, dpToPx(24), topY, dpToPx(12), paintAccentCyan);
@@ -1723,11 +1725,12 @@ public class HyperRingOverlay {
     }
 
     private static int getDefaultCardHeight(int state) {
+        if (customCardHeight > 0) return dpToPx(customCardHeight);
         switch (state) {
-            case STATE_MEDIA:    return dpToPx(126);
-            case STATE_CHARGING: return dpToPx(112);
-            case STATE_VOLUME:   return dpToPx(88);
-            default:             return dpToPx(96);
+            case STATE_MEDIA:    return dpToPx(132);
+            case STATE_CHARGING: return dpToPx(116);
+            case STATE_VOLUME:   return dpToPx(92);
+            default:             return dpToPx(100);
         }
     }
 
@@ -1764,11 +1767,13 @@ public class HyperRingOverlay {
         } else if (isExpanded) {
             int defaultCardW = (customCardWidth > 0) ? dpToPx(customCardWidth) : dpToPx(320);
             reqW = Math.min(displayWidthPx - dpToPx(16), defaultCardW);
-            reqH = getDefaultCardHeight(currentIsland);
-            if (notchMode) {
+            reqH = (customCardHeight > 0) ? dpToPx(customCardHeight) : getDefaultCardHeight(currentIsland);
+            if (notchMode || "cover".equalsIgnoreCase(cardPositionMode)) {
                 reqY = Math.max(0, yOffset);
             } else {
-                reqY = Math.max(dpToPx(4), Math.min(displayHeightPx - reqH - dpToPx(12), Math.round(effCutoutY - cutoutRadius - dpToPx(2))));
+                // Floating below cutout / statusbar (dynamicSpot style - eliminates statusbar collision)
+                int baseBelowY = Math.round(effCutoutY + cutoutRadius + dpToPx(8));
+                reqY = Math.max(dpToPx(4), Math.min(displayHeightPx - reqH - dpToPx(12), baseBelowY + dpToPx(cardYOffset)));
             }
         } else {
             int defaultW = getDefaultPillWidth(currentIsland);
@@ -2695,7 +2700,10 @@ public class HyperRingOverlay {
             customPillWidth     = parseInt(json, "pill_width", customPillWidth);
             customPillHeight    = parseInt(json, "pill_height", customPillHeight);
             customCardWidth     = parseInt(json, "card_width", customCardWidth);
+            customCardHeight    = parseInt(json, "card_height", customCardHeight);
             cardRadius          = parseInt(json, "card_radius", cardRadius);
+            cardYOffset         = parseInt(json, "card_y_offset", cardYOffset);
+            cardPositionMode    = parseStr(json, "card_position_mode", cardPositionMode);
             pillAlignment       = parseStr(json, "pill_alignment", pillAlignment);
             notchMode           = parseBool(json, "notch_mode", notchMode);
             enableMedia         = parseBool(json, "enable_media", enableMedia);
