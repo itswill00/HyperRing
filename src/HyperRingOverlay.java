@@ -320,6 +320,10 @@ public class HyperRingOverlay {
     private static Paint paintArtBitmap;
     private static Paint paintAmbientGlow;
     private static Paint paintProgress;
+    private static Paint paintTextMonospace;
+    private static Paint paintIconStroke;
+    private static boolean isMediaRepeat = false;
+    private static boolean isMediaFavorite = false;
     private static RectF tempRectF;
     private static final RectF artRectF = new RectF();
     private static final Path artClipPath = new Path();
@@ -599,6 +603,17 @@ public class HyperRingOverlay {
         paintFadeMask = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintFadeMask.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
 
+        paintTextMonospace = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paintTextMonospace.setColor(Color.argb(175, 255, 255, 255));
+        try {
+            paintTextMonospace.setTypeface(Typeface.MONOSPACE);
+        } catch (Throwable ignored) {}
+
+        paintIconStroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paintIconStroke.setColor(Color.WHITE);
+        paintIconStroke.setStyle(Paint.Style.STROKE);
+        paintIconStroke.setStrokeWidth(dpToPx(1.4f));
+
         tempRectF = new RectF();
     }
 
@@ -765,16 +780,35 @@ public class HyperRingOverlay {
         }
     };
 
+    private static final Runnable rebindRunnable150 = new Runnable() {
+        @Override
+        public void run() {
+            checkDisplayRebind();
+        }
+    };
+
+    private static final Runnable rebindRunnable400 = new Runnable() {
+        @Override
+        public void run() {
+            checkDisplayRebind();
+        }
+    };
 
     private static void scheduleRebindRetry() {
         if (handler == null) return;
         handler.removeCallbacks(rebindRunnable);
-        handler.postDelayed(rebindRunnable, 500);
+        handler.removeCallbacks(rebindRunnable150);
+        handler.removeCallbacks(rebindRunnable400);
+
+        // Immediate post rebind followed by rapid staggered retries (150ms, 400ms)
+        handler.post(rebindRunnable);
+        handler.postDelayed(rebindRunnable150, 150);
+        handler.postDelayed(rebindRunnable400, 400);
     }
 
     private static void checkDisplayRebind() {
         if (handler == null) return;
-        handler.post(new Runnable() {
+        Runnable r = new Runnable() {
             @Override
             public void run() {
                 try {
@@ -842,6 +876,7 @@ public class HyperRingOverlay {
                                 params.width = 1;
                                 params.height = 1;
                                 params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                                params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
                                 try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
                             }
                             return;
@@ -866,7 +901,12 @@ public class HyperRingOverlay {
                     }
                 } catch (Throwable ignored) {}
             }
-        });
+        };
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            r.run();
+        } else {
+            handler.post(r);
+        }
     }
 
     private static void triggerChargingEvent() {
@@ -1235,18 +1275,56 @@ public class HyperRingOverlay {
             }
         } else {
             float viewW = springW.current;
-            float viewH = springH.current;
 
             if (currentIsland == STATE_MEDIA) {
-                float artSize = dpToPx(48);
+                float artSize = dpToPx(50);
                 float holeRelY = (params != null) ? Math.max(0, (cutoutCenterY + yOffset) - params.y) : dpToPx(16);
                 boolean isCutoutCenter = !"left".equalsIgnoreCase(pillAlignment) && !"right".equalsIgnoreCase(pillAlignment);
                 boolean isFloatingBelow = !"cover".equalsIgnoreCase(cardPositionMode) && !notchMode;
-                float baseTopY = isFloatingBelow ? dpToPx(20) : (isCutoutCenter ? Math.max(dpToPx(24), holeRelY + cutoutRadius + dpToPx(6)) : dpToPx(20));
+                float baseTopY = isFloatingBelow ? dpToPx(18) : (isCutoutCenter ? Math.max(dpToPx(24), holeRelY + cutoutRadius + dpToPx(6)) : dpToPx(18));
+                float artTop = baseTopY;
 
-                float barY = baseTopY + artSize + dpToPx(14);
-                float barLeft = dpToPx(22);
-                float barW = viewW - dpToPx(44);
+                // Row 1: Cast / Route icon glyph on top-right
+                float castBtnX = viewW - dpToPx(26);
+                float castBtnY = artTop + artSize * 0.40f;
+                if (Math.abs(x - castBtnX) < dpToPx(22) && Math.abs(y - castBtnY) < dpToPx(22)) {
+                    triggerMediaOutputRoute();
+                    return;
+                }
+
+                // Row 2: 5 buttons [Repeat/Shuffle] — [Prev] — [Play/Pause] — [Next] — [Favorite/Heart]
+                float btnY = artTop + artSize + dpToPx(24);
+                float centerX = viewW / 2.0f;
+                float b1X = centerX - dpToPx(96);
+                float b2X = centerX - dpToPx(48);
+                float b3X = centerX;
+                float b4X = centerX + dpToPx(48);
+                float b5X = centerX + dpToPx(96);
+                float btnHitRadius = dpToPx(22);
+
+                if (Math.abs(y - btnY) < btnHitRadius) {
+                    if (Math.abs(x - b3X) < dpToPx(24)) {
+                        toggleMediaPlayback();
+                        return;
+                    } else if (Math.abs(x - b2X) < btnHitRadius) {
+                        skipMediaPrevious();
+                        return;
+                    } else if (Math.abs(x - b4X) < btnHitRadius) {
+                        skipMediaNext();
+                        return;
+                    } else if (Math.abs(x - b1X) < btnHitRadius) {
+                        toggleMediaRepeatShuffle();
+                        return;
+                    } else if (Math.abs(x - b5X) < btnHitRadius) {
+                        toggleMediaFavorite();
+                        return;
+                    }
+                }
+
+                // Row 3: Full-width bottom progress track with monospace timestamps flanking the bar
+                float barY = btnY + dpToPx(28);
+                float barLeft = dpToPx(62);
+                float barW = viewW - dpToPx(124);
 
                 // Interactive Seekbar tap support
                 if (mediaTrackDuration > 0 && Math.abs(y - barY) < dpToPx(14) && x >= barLeft - dpToPx(8) && x <= barLeft + barW + dpToPx(8)) {
@@ -1256,24 +1334,6 @@ public class HyperRingOverlay {
                     return;
                 }
 
-                float btnY = viewH - dpToPx(22);
-                float centerX = viewW / 2.0f;
-                float prevBtnX = centerX - dpToPx(65);
-                float nextBtnX = centerX + dpToPx(65);
-                float hitRadius = dpToPx(28);
-
-                if (Math.abs(y - btnY) < hitRadius) {
-                    if (Math.abs(x - centerX) < hitRadius) {
-                        toggleMediaPlayback();
-                        return;
-                    } else if (Math.abs(x - prevBtnX) < hitRadius) {
-                        skipMediaPrevious();
-                        return;
-                    } else if (Math.abs(x - nextBtnX) < hitRadius) {
-                        skipMediaNext();
-                        return;
-                    }
-                }
                 collapseCard();
                 return;
             } else if (currentIsland == STATE_TORCH) {
@@ -1437,12 +1497,13 @@ public class HyperRingOverlay {
             paintTextPrimary.setColor(Color.WHITE);
 
         } else if (renderType == STATE_MEDIA) {
-            if (mediaShowPillArt && currentPillArt != null && !currentPillArt.isRecycled()) {
-                float artThumbSize = dpToPx(22);
-                float artLeft = iconCenterX - artThumbSize / 2.0f;
-                float artTop = centerY - artThumbSize / 2.0f;
-                artRectF.set(artLeft, artTop, artLeft + artThumbSize, artTop + artThumbSize);
+            float artThumbSize = dpToPx(22);
+            float artLeft = iconCenterX - artThumbSize / 2.0f;
+            float artTop = centerY - artThumbSize / 2.0f;
+            artRectF.set(artLeft, artTop, artLeft + artThumbSize, artTop + artThumbSize);
 
+            // Left Wing: Squircle/rounded compact album art thumbnail (22dp)
+            if (mediaShowPillArt && currentPillArt != null && !currentPillArt.isRecycled()) {
                 canvas.save();
                 artClipPath.reset();
                 if ("circle".equalsIgnoreCase(mediaArtStyle)) {
@@ -1450,21 +1511,34 @@ public class HyperRingOverlay {
                 } else if ("squircle".equalsIgnoreCase(mediaArtStyle)) {
                     artClipPath.addRoundRect(artRectF, artThumbSize * 0.38f, artThumbSize * 0.38f, Path.Direction.CW);
                 } else { // "rounded" default
-                    artClipPath.addRoundRect(artRectF, dpToPx(4.5f), dpToPx(4.5f), Path.Direction.CW);
+                    artClipPath.addRoundRect(artRectF, dpToPx(5.5f), dpToPx(5.5f), Path.Direction.CW);
                 }
                 canvas.clipPath(artClipPath);
                 paintArtBitmap.setAlpha(intAlpha);
                 canvas.drawBitmap(currentPillArt, null, artRectF, paintArtBitmap);
                 canvas.restore();
             } else {
-                paintAccentCyan.setColor(Color.parseColor("#38BDF8"));
+                canvas.save();
+                artClipPath.reset();
+                artClipPath.addRoundRect(artRectF, dpToPx(5.5f), dpToPx(5.5f), Path.Direction.CW);
+                canvas.clipPath(artClipPath);
+                paintOledBlack.setAlpha(intAlpha);
+                canvas.drawRoundRect(artRectF, dpToPx(5.5f), dpToPx(5.5f), paintOledBlack);
+                int discColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
+                if ("#FFFFFF".equalsIgnoreCase(mediaPulseColor)) discColor = Color.WHITE;
+                else if ("#A1A1AA".equalsIgnoreCase(mediaPulseColor)) discColor = Color.parseColor("#A1A1AA");
+                paintAccentCyan.setColor(discColor);
+                paintAccentCyan.setAlpha(Math.min(255, (int) (alpha * 60)));
+                canvas.drawRoundRect(artRectF, dpToPx(5.5f), dpToPx(5.5f), paintAccentCyan);
                 paintAccentCyan.setAlpha(intAlpha);
                 drawMusicNoteIcon(canvas, iconCenterX, centerY, dpToPx(11), paintAccentCyan);
+                canvas.restore();
             }
 
+            // Right Wing: Multi-bar animated waveform visualizer
             if (mediaShowWaveform) {
                 boolean isCutoutCenter = !"left".equalsIgnoreCase(pillAlignment) && !"right".equalsIgnoreCase(pillAlignment);
-                float barsStart = isCutoutCenter ? (textCenterX - dpToPx(10)) : (textCenterX - dpToPx(20));
+                float barsStart = isCutoutCenter ? (textCenterX - dpToPx(7.4f)) : (textCenterX - dpToPx(15f));
                 renderAudioBars(canvas, barsStart, centerY, alpha);
             } else {
                 paintTextPrimary.setTextSize(spToPx(11f));
@@ -1610,24 +1684,30 @@ public class HyperRingOverlay {
             canvas.drawText(rightSub, curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (renderType == STATE_MEDIA) {
-            float artSize = dpToPx(48);
-            float artLeft = dpToPx(28);
-            float artTop = isFloatingBelow ? dpToPx(20) : Math.max(dpToPx(20), baseTopY);
+            float artSize = dpToPx(50);
+            float artLeft = dpToPx(20);
+            float artTop = isFloatingBelow ? dpToPx(18) : Math.max(dpToPx(18), baseTopY);
             float curR = (springR != null) ? springR.current : dpToPx(24);
 
-            // 1. Dynamic Ambient Color Glow
-            if (mediaAmbientGlow && mediaDominantColor != Color.TRANSPARENT) {
+            // Atmospheric ambient gradient tinted by dominant album art color diffusing from bottom/center
+            int glowColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
+            if ("#FFFFFF".equalsIgnoreCase(mediaPulseColor)) glowColor = Color.WHITE;
+            else if ("#A1A1AA".equalsIgnoreCase(mediaPulseColor)) glowColor = Color.parseColor("#A1A1AA");
+
+            if (mediaAmbientGlow && glowColor != Color.TRANSPARENT) {
                 int glowAlpha = (int) (255 * (mediaGlowOpacity / 100f) * alpha);
                 if (glowAlpha > 0) {
                     float glowRadius = curW * 0.75f;
-                    if (cachedGlowGradient == null || cachedGlowColor != mediaDominantColor || Math.abs(cachedGlowW - curW) > 1f) {
-                        cachedGlowColor = mediaDominantColor;
+                    float glowCenterX = curW * 0.5f;
+                    float glowCenterY = curH * 0.95f;
+                    if (cachedGlowGradient == null || cachedGlowColor != glowColor || Math.abs(cachedGlowW - curW) > 1f) {
+                        cachedGlowColor = glowColor;
                         cachedGlowW = curW;
                         cachedGlowGradient = new RadialGradient(
-                            artLeft + artSize * 0.5f,
-                            artTop + artSize * 0.5f,
+                            glowCenterX,
+                            glowCenterY,
                             glowRadius,
-                            mediaDominantColor,
+                            glowColor,
                             Color.TRANSPARENT,
                             Shader.TileMode.CLAMP
                         );
@@ -1640,21 +1720,21 @@ public class HyperRingOverlay {
                 }
             }
 
-            // 2. Shared Element Album Art (48dp, 11dp rounded corners, safe internal padding)
+            // Row 1 (Metadata): Squircle Album Art (48-52dp, radius 12dp, balanced padding)
             artRectF.set(artLeft, artTop, artLeft + artSize, artTop + artSize);
             if (currentCardArt != null && !currentCardArt.isRecycled()) {
                 canvas.save();
                 artClipPath.reset();
-                artClipPath.addRoundRect(artRectF, dpToPx(11), dpToPx(11), Path.Direction.CW);
+                artClipPath.addRoundRect(artRectF, dpToPx(12), dpToPx(12), Path.Direction.CW);
                 canvas.clipPath(artClipPath);
                 paintArtBitmap.setAlpha(intAlpha);
                 canvas.drawBitmap(currentCardArt, null, artRectF, paintArtBitmap);
                 canvas.restore();
             } else {
-                int discColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
+                int discColor = (glowColor != Color.TRANSPARENT) ? glowColor : Color.parseColor("#38BDF8");
                 paintAccentCyan.setColor(discColor);
                 paintAccentCyan.setAlpha(Math.min(255, (int) (alpha * 38)));
-                canvas.drawRoundRect(artRectF, dpToPx(11), dpToPx(11), paintAccentCyan);
+                canvas.drawRoundRect(artRectF, dpToPx(12), dpToPx(12), paintAccentCyan);
 
                 paintAccentCyan.setAlpha(intAlpha);
                 canvas.drawCircle(artLeft + artSize / 2f, artTop + artSize / 2f, dpToPx(10), paintAccentCyan);
@@ -1662,10 +1742,10 @@ public class HyperRingOverlay {
                 canvas.drawCircle(artLeft + artSize / 2f, artTop + artSize / 2f, dpToPx(4), paintOledBlack);
             }
 
-            // 3. Track Title & Artist with Horizontal Fading Edge Marquee
-            float textLeft = artLeft + artSize + dpToPx(14);
-            float textRight = curW - dpToPx(22);
-            float maxTextW = textRight - textLeft;
+            // Track Title (marquee with 14dp horizontal fading edge) + Artist Name (muted secondary)
+            float textLeft = artLeft + artSize + dpToPx(12);
+            float textRight = curW - dpToPx(48); // Leaves space for Cast/Route icon
+            float maxTextW = Math.max(dpToPx(40), textRight - textLeft);
 
             paintTextPrimary.setTextSize(spToPx(14));
             paintTextPrimary.setTextAlign(Paint.Align.LEFT);
@@ -1674,7 +1754,7 @@ public class HyperRingOverlay {
 
             float titleW = paintTextPrimary.measureText(mediaTitle);
             if (mediaMarquee && titleW > maxTextW) {
-                float gap = dpToPx(36);
+                float gap = dpToPx(32);
                 float span = titleW + gap;
                 float offset = (SystemClock.uptimeMillis() / 25f) % span;
 
@@ -1685,8 +1765,8 @@ public class HyperRingOverlay {
                     canvas.drawText(mediaTitle, textLeft - offset + span, artTop + dpToPx(18), paintTextPrimary);
                 }
 
-                // Horizontal fading edges (16dp length to match HyperOS marquee)
-                float fadeLen = dpToPx(16);
+                // Horizontal fading edges (14dp length)
+                float fadeLen = dpToPx(14);
                 float totalW = textRight - textLeft;
                 if (cachedMarqueeGradient == null || Math.abs(cachedMarqueeLeft - textLeft) > 1f || Math.abs(cachedMarqueeRight - textRight) > 1f) {
                     cachedMarqueeLeft = textLeft;
@@ -1704,31 +1784,65 @@ public class HyperRingOverlay {
                 canvas.drawRect(marqueeBounds, paintFadeMask);
                 canvas.restore();
             } else {
-                canvas.drawText(truncate(mediaTitle, 22), textLeft, artTop + dpToPx(18), paintTextPrimary);
+                canvas.drawText(truncate(mediaTitle, 20), textLeft, artTop + dpToPx(18), paintTextPrimary);
             }
 
             paintTextSecondary.setTextSize(spToPx(12));
             paintTextSecondary.setTextAlign(Paint.Align.LEFT);
-            paintTextSecondary.setColor(Color.WHITE);
+            paintTextSecondary.setColor(Color.argb(175, 255, 255, 255));
             paintTextSecondary.setAlpha(Math.min(255, (int) (alpha * 175)));
-            canvas.drawText(truncate(mediaArtist.isEmpty() ? "Media Playback" : mediaArtist, 24), textLeft, artTop + dpToPx(36), paintTextSecondary);
+            canvas.drawText(truncate(mediaArtist.isEmpty() ? "Media Playback" : mediaArtist, 22), textLeft, artTop + dpToPx(38), paintTextSecondary);
 
-            // Calculate card expansion progress to synchronize seekbar & controls transition timing
+            // Cast / Route icon glyph on top right
+            float castX = curW - dpToPx(26);
+            float castY = artTop + artSize * 0.40f;
+            paintIconFill.setAlpha(Math.min(255, (int) (alpha * 200)));
+            drawCastIcon(canvas, castX, castY, dpToPx(17), paintIconFill);
+
+            // Row 2 & Row 3 alpha transition
             float compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
             float targetCardH = getDefaultCardHeight(currentIsland);
             float expandProgress = Math.max(0.0f, Math.min(1.0f, (curH - compactH) / Math.max(1.0f, targetCardH - compactH)));
 
-            // Seekbar alpha starts at 50% expansion progress and reaches full opacity exactly when the card spring settles
-            float seekbarProgress = Math.max(0.0f, Math.min(1.0f, (expandProgress - 0.50f) / 0.50f));
-            float seekbarEase = seekbarProgress * seekbarProgress * (3.0f - 2.0f * seekbarProgress);
-            float seekbarAlpha = alpha * seekbarEase;
-            int seekbarIntAlpha = Math.min(255, Math.max(0, (int) (seekbarAlpha * 255)));
+            float controlsProgress = Math.max(0.0f, Math.min(1.0f, (expandProgress - 0.45f) / 0.55f));
+            float controlsEase = controlsProgress * controlsProgress * (3.0f - 2.0f * controlsProgress);
+            float controlsAlpha = alpha * controlsEase;
+            int controlsIntAlpha = Math.min(255, Math.max(0, (int) (controlsAlpha * 255)));
 
-            if (seekbarAlpha > 0.02f) {
-                // 4. Interactive Progress Seekbar & Time labels
-                float barY = artTop + artSize + dpToPx(14);
-                float barLeft = dpToPx(22);
-                float barW = curW - dpToPx(44);
+            if (controlsAlpha > 0.02f) {
+                // Row 2 (Controls): 5-button horizontal layout: [Repeat/Shuffle] — [Prev] — [Play/Pause] — [Next] — [Favorite/Heart]
+                float btnY = artTop + artSize + dpToPx(24);
+                float centerX = curW / 2.0f;
+                float b1X = centerX - dpToPx(96);
+                float b2X = centerX - dpToPx(48);
+                float b3X = centerX;
+                float b4X = centerX + dpToPx(48);
+                float b5X = centerX + dpToPx(96);
+
+                paintIconFill.setAlpha(controlsIntAlpha);
+                // 1. Repeat / Shuffle
+                drawRepeatIcon(canvas, b1X, btnY, dpToPx(15), paintIconFill, isMediaRepeat);
+
+                // 2. Prev
+                drawPrevIcon(canvas, b2X, btnY, dpToPx(14), paintIconFill);
+
+                // 3. Play / Pause (Prominent center)
+                if (isMediaPlaying) {
+                    drawPauseIcon(canvas, b3X, btnY, dpToPx(16), paintIconFill);
+                } else {
+                    drawPlayIcon(canvas, b3X, btnY, dpToPx(16), paintIconFill);
+                }
+
+                // 4. Next
+                drawNextIcon(canvas, b4X, btnY, dpToPx(14), paintIconFill);
+
+                // 5. Favorite / Heart
+                drawHeartIcon(canvas, b5X, btnY, dpToPx(15), paintIconFill, isMediaFavorite);
+
+                // Row 3 (Seekbar): Full-width bottom progress track with monospace timestamps flanking the bar
+                float barY = btnY + dpToPx(28);
+                float barLeft = dpToPx(62);
+                float barW = curW - dpToPx(124);
                 float barH = dpToPx(3.5f);
 
                 long curPos = mediaTrackPosition;
@@ -1739,50 +1853,33 @@ public class HyperRingOverlay {
                 if (mediaTrackDuration > 0 && curPos > mediaTrackDuration) curPos = mediaTrackDuration;
                 float progressFraction = (mediaTrackDuration > 0) ? Math.max(0f, Math.min(1f, (float) curPos / (float) mediaTrackDuration)) : 0f;
 
-                paintTrack.setAlpha(Math.min(255, (int) (seekbarAlpha * 45)));
-                artRectF.set(barLeft, barY, barLeft + barW, barY + barH);
+                // Timestamps flanking the seekbar
+                if (paintTextMonospace != null) {
+                    paintTextMonospace.setTextSize(spToPx(10.5f));
+                    paintTextMonospace.setAlpha(Math.min(255, (int) (controlsAlpha * 160)));
+                    paintTextMonospace.setTextAlign(Paint.Align.LEFT);
+                    canvas.drawText(formatTimeMs(curPos), dpToPx(20), barY + dpToPx(4f), paintTextMonospace);
+
+                    paintTextMonospace.setTextAlign(Paint.Align.RIGHT);
+                    String remStr = (mediaTrackDuration > 0) ? "-" + formatTimeMs(Math.max(0, mediaTrackDuration - curPos)) : "--:--";
+                    canvas.drawText(remStr, curW - dpToPx(20), barY + dpToPx(4f), paintTextMonospace);
+                }
+
+                // Progress track
+                paintTrack.setAlpha(Math.min(255, (int) (controlsAlpha * 40)));
+                artRectF.set(barLeft, barY - barH / 2f, barLeft + barW, barY + barH / 2f);
                 canvas.drawRoundRect(artRectF, barH / 2f, barH / 2f, paintTrack);
 
-                int progColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
+                int progColor = (glowColor != Color.TRANSPARENT) ? glowColor : Color.parseColor("#38BDF8");
                 paintProgress.setColor(progColor);
-                paintProgress.setAlpha(seekbarIntAlpha);
-                artRectF.set(barLeft, barY, barLeft + (barW * progressFraction), barY + barH);
+                paintProgress.setAlpha(controlsIntAlpha);
+                artRectF.set(barLeft, barY - barH / 2f, barLeft + (barW * progressFraction), barY + barH / 2f);
                 canvas.drawRoundRect(artRectF, barH / 2f, barH / 2f, paintProgress);
 
-                // Stabilized progress thumb: render thumb at alpha 1.0 only once playback position is stabilized and card is fully expanded
-                boolean isPositionStabilized = (mediaTrackDuration > 0 || !isMediaPlaying) && mediaPositionUpdateTime > 0;
-                float thumbExpandFactor = Math.max(0.0f, Math.min(1.0f, (expandProgress - 0.85f) / 0.15f));
-                float thumbAlpha = isPositionStabilized ? (seekbarAlpha * thumbExpandFactor * thumbExpandFactor) : 0f;
-                int thumbIntAlpha = Math.min(255, Math.max(0, (int) (thumbAlpha * 255)));
-                if (thumbIntAlpha > 0 && mediaTrackDuration > 0) {
-                    paintProgress.setAlpha(thumbIntAlpha);
-                    canvas.drawCircle(barLeft + (barW * progressFraction), barY + barH / 2f, dpToPx(4.5f), paintProgress);
-                }
-
+                // Progress Thumb
                 if (mediaTrackDuration > 0) {
-                    paintTextTertiary.setTextSize(spToPx(10));
-                    paintTextTertiary.setTextAlign(Paint.Align.LEFT);
-                    paintTextTertiary.setAlpha(Math.min(255, (int) (seekbarAlpha * 140)));
-                    canvas.drawText(formatTimeMs(curPos), barLeft, barY + dpToPx(13), paintTextTertiary);
-
-                    paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
-                    canvas.drawText("-" + formatTimeMs(Math.max(0, mediaTrackDuration - curPos)), barLeft + barW, barY + dpToPx(13), paintTextTertiary);
+                    canvas.drawCircle(barLeft + (barW * progressFraction), barY, dpToPx(4.5f), paintProgress);
                 }
-
-                // 5. Playback Transport Controls
-                float btnY = curH - dpToPx(22);
-                float centerX = curW / 2.0f;
-                float prevBtnX = centerX - dpToPx(65);
-                float nextBtnX = centerX + dpToPx(65);
-
-                paintIconFill.setAlpha(seekbarIntAlpha);
-                drawPrevIcon(canvas, prevBtnX, btnY, dpToPx(13), paintIconFill);
-                if (isMediaPlaying) {
-                    drawPauseIcon(canvas, centerX, btnY, dpToPx(13), paintIconFill);
-                } else {
-                    drawPlayIcon(canvas, centerX, btnY, dpToPx(13), paintIconFill);
-                }
-                drawNextIcon(canvas, nextBtnX, btnY, dpToPx(13), paintIconFill);
             }
 
         } else if (renderType == STATE_VOLUME) {
@@ -2087,6 +2184,133 @@ public class HyperRingOverlay {
         p.lineTo(cx + size * 0.45f, cy + size * 0.35f);
         p.close();
         canvas.drawPath(p, paint);
+    }
+
+    private static void drawCastIcon(Canvas canvas, float cx, float cy, float size, Paint paint) {
+        float halfW = size * 0.50f;
+        float halfH = size * 0.38f;
+        Paint strokeP = (paintIconStroke != null) ? paintIconStroke : new Paint(paint);
+        strokeP.setStyle(Paint.Style.STROKE);
+        strokeP.setStrokeWidth(dpToPx(1.3f));
+        strokeP.setColor(paint.getColor());
+        strokeP.setAlpha(paint.getAlpha());
+
+        RectF screenRect = new RectF(cx - halfW, cy - halfH, cx + halfW, cy + halfH);
+        canvas.drawRoundRect(screenRect, dpToPx(2.5f), dpToPx(2.5f), strokeP);
+
+        // Broadcast wave arcs in bottom-left
+        float blX = cx - halfW + dpToPx(3.2f);
+        float blY = cy + halfH - dpToPx(3.2f);
+        Paint dotP = new Paint(paint);
+        dotP.setStyle(Paint.Style.FILL);
+        canvas.drawCircle(blX, blY, dpToPx(1.2f), dotP);
+        RectF arc1 = new RectF(blX - dpToPx(3.5f), blY - dpToPx(3.5f), blX + dpToPx(3.5f), blY + dpToPx(3.5f));
+        canvas.drawArc(arc1, 270, 90, false, strokeP);
+        RectF arc2 = new RectF(blX - dpToPx(6.5f), blY - dpToPx(6.5f), blX + dpToPx(6.5f), blY + dpToPx(6.5f));
+        canvas.drawArc(arc2, 270, 90, false, strokeP);
+    }
+
+    private static void drawRepeatIcon(Canvas canvas, float cx, float cy, float size, Paint paint, boolean active) {
+        Paint strokeP = (paintIconStroke != null) ? paintIconStroke : new Paint(paint);
+        strokeP.setStyle(Paint.Style.STROKE);
+        strokeP.setStrokeWidth(dpToPx(1.4f));
+        strokeP.setColor(active ? Color.WHITE : Color.argb(160, 255, 255, 255));
+        strokeP.setAlpha(paint.getAlpha());
+
+        float w = size * 0.44f;
+        float h = size * 0.28f;
+        RectF loopRect = new RectF(cx - w, cy - h, cx + w, cy + h);
+        canvas.drawRoundRect(loopRect, dpToPx(2.5f), dpToPx(2.5f), strokeP);
+
+        Path arrow = new Path();
+        float ax = cx + w;
+        float ay = cy - h;
+        arrow.moveTo(ax - dpToPx(3.2f), ay - dpToPx(2.5f));
+        arrow.lineTo(ax + dpToPx(1.5f), ay);
+        arrow.lineTo(ax - dpToPx(3.2f), ay + dpToPx(2.5f));
+        arrow.close();
+        Paint fillP = new Paint(paint);
+        fillP.setStyle(Paint.Style.FILL);
+        fillP.setColor(strokeP.getColor());
+        canvas.drawPath(arrow, fillP);
+    }
+
+    private static void drawHeartIcon(Canvas canvas, float cx, float cy, float size, Paint paint, boolean filled) {
+        Path path = new Path();
+        float s = size * 0.52f;
+        float top = cy - s * 0.5f;
+        path.moveTo(cx, top + s * 0.35f);
+        path.cubicTo(cx - s * 0.7f, top - s * 0.5f, cx - s * 1.15f, top + s * 0.4f, cx, top + s * 1.35f);
+        path.cubicTo(cx + s * 1.15f, top + s * 0.4f, cx + s * 0.7f, top - s * 0.5f, cx, top + s * 0.35f);
+        path.close();
+
+        if (filled) {
+            Paint fillP = new Paint(paint);
+            fillP.setStyle(Paint.Style.FILL);
+            fillP.setColor(Color.parseColor("#F43F5E"));
+            fillP.setAlpha(paint.getAlpha());
+            canvas.drawPath(path, fillP);
+        } else {
+            Paint strokeP = (paintIconStroke != null) ? paintIconStroke : new Paint(paint);
+            strokeP.setStyle(Paint.Style.STROKE);
+            strokeP.setStrokeWidth(dpToPx(1.4f));
+            strokeP.setColor(Color.argb(175, 255, 255, 255));
+            strokeP.setAlpha(paint.getAlpha());
+            canvas.drawPath(path, strokeP);
+        }
+    }
+
+    private static void triggerMediaOutputRoute() {
+        if (context != null) {
+            try {
+                Intent intent = new Intent("com.android.settings.panel.action.MEDIA_OUTPUT");
+                if (activeMediaController != null) {
+                    intent.putExtra("com.android.settings.panel.extra.PACKAGE_NAME", activeMediaController.getPackageName());
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
+                return;
+            } catch (Throwable ignored) {}
+        }
+        try {
+            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_SAME, AudioManager.FLAG_SHOW_UI);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void toggleMediaRepeatShuffle() {
+        isMediaRepeat = !isMediaRepeat;
+        if (activeMediaController != null) {
+            try {
+                java.lang.reflect.Method m = activeMediaController.getTransportControls().getClass().getMethod("setRepeatMode", int.class);
+                m.invoke(activeMediaController.getTransportControls(), isMediaRepeat ? 2 : 0);
+            } catch (Throwable t) {
+                try {
+                    activeMediaController.getTransportControls().sendCustomAction("ACTION_TOGGLE_REPEAT", null);
+                } catch (Throwable ignored) {}
+            }
+        }
+        wakeEngineLoop();
+    }
+
+    private static void toggleMediaFavorite() {
+        isMediaFavorite = !isMediaFavorite;
+        if (activeMediaController != null) {
+            try {
+                Class<?> ratingCls = Class.forName("android.media.Rating");
+                java.lang.reflect.Method heartM = ratingCls.getMethod("newHeartRating", boolean.class);
+                Object r = heartM.invoke(null, isMediaFavorite);
+                java.lang.reflect.Method setRatingM = activeMediaController.getTransportControls().getClass().getMethod("setRating", ratingCls);
+                setRatingM.invoke(activeMediaController.getTransportControls(), r);
+            } catch (Throwable t) {
+                try {
+                    activeMediaController.getTransportControls().sendCustomAction("ACTION_TOGGLE_FAVORITE", null);
+                } catch (Throwable ignored) {}
+            }
+        }
+        wakeEngineLoop();
     }
 
     private static String truncate(String s, int max) {
@@ -2556,7 +2780,7 @@ public class HyperRingOverlay {
     private static int getDefaultCardHeight(int state) {
         if (customCardHeight > 0) return dpToPx(customCardHeight);
         switch (state) {
-            case STATE_MEDIA:    return dpToPx(138);
+            case STATE_MEDIA:    return dpToPx(152);
             case STATE_CHARGING: return dpToPx(116);
             case STATE_VOLUME:   return dpToPx(92);
             default:             return dpToPx(100);

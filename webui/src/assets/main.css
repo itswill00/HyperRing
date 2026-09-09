@@ -3,37 +3,37 @@
 
 :root {
   color-scheme: dark;
-  --bg: #121316;
-  --on-bg: #f0f2f5;
+  --bg: #000000;
+  --on-bg: #FFFFFF;
 
-  --surface: #121316;
-  --on-surface: #f0f2f5;
+  --surface: #0C0C0E;
+  --on-surface: #FFFFFF;
 
-  --surface-container-lowest: #0a0b0d;
-  --surface-container-low: #16171b;
-  --surface-container: #1c1d22;
-  --surface-container-high: #25262e;
-  --surface-container-highest: #2f313b;
-  --surface-dim: #121316;
-  --surface-bright: #3c3e4b;
+  --surface-container-lowest: #000000;
+  --surface-container-low: #0C0C0E;
+  --surface-container: #18181B;
+  --surface-container-high: #27272A;
+  --surface-container-highest: #3F3F46;
+  --surface-dim: #000000;
+  --surface-bright: #3F3F46;
 
-  --surface-variant: #454753;
-  --on-surface-variant: #9ea3b2;
-  --outline: #5a5e6d;
-  --outline-variant: #343640;
+  --surface-variant: #27272A;
+  --on-surface-variant: #A1A1AA;
+  --outline: #71717A;
+  --outline-variant: #27272A;
 
-  --primary: #e2e5ec;
-  --on-primary: #18191c;
-  --primary-container: #2f323c;
-  --on-primary-container: #f0f2f5;
+  --primary: #FFFFFF;
+  --on-primary: #000000;
+  --primary-container: #FFFFFF;
+  --on-primary-container: #000000;
 
-  --secondary: #c4c8d4;
-  --on-secondary: #1d1e23;
-  --secondary-container: #282a32;
-  --on-secondary-container: #e6e9f0;
+  --secondary: #A1A1AA;
+  --on-secondary: #000000;
+  --secondary-container: #27272A;
+  --on-secondary-container: #FFFFFF;
 
-  --error: #e59995;
-  --on-error: #501210;
+  --error: #FFFFFF;
+  --on-error: #000000;
 
   --font-sans: system-ui, -apple-system, Roboto, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
@@ -256,14 +256,15 @@ body, #app {
 }
 
 .badge-pill.active {
-  background: rgba(163, 217, 165, 0.15);
-  color: #a3d9a5;
-  border-color: rgba(163, 217, 165, 0.35);
+  background: #FFFFFF;
+  color: #000000;
+  border-color: #FFFFFF;
 }
 
 .badge-pill.standby {
-  background: var(--surface-container-high);
-  color: var(--outline);
+  background: #27272A;
+  color: #71717A;
+  border-color: #3F3F46;
 }
 
 /* Switches */
@@ -713,8 +714,8 @@ body, #app {
 }
 
 .reticle-toggle-bar.active {
-  background: rgba(0, 229, 255, 0.08);
-  border-color: rgba(0, 229, 255, 0.45);
+  background: #27272A;
+  border-color: #FFFFFF;
 }
 
 /* Live Preview Controller Card */
@@ -801,13 +802,13 @@ body, #app {
 }
 
 .master-status-chip.chip-on {
-  background: rgba(163, 217, 165, 0.16);
-  color: #a3d9a5;
-  border: 1px solid rgba(163, 217, 165, 0.35);
+  background: #FFFFFF;
+  color: #000000;
+  border: 1px solid #FFFFFF;
 }
 
 .master-status-chip.chip-off {
-  background: rgba(229, 153, 149, 0.16);
-  color: #e59995;
-  border: 1px solid rgba(229, 153, 149, 0.35);
+  background: #27272A;
+  color: #71717A;
+  border: 1px solid #3F3F46;
 }
