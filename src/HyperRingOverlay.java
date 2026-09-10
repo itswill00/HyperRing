@@ -195,6 +195,10 @@ public class HyperRingOverlay {
     private static volatile long lastNotifTime = 0L;
     private static volatile String lastNotifPkg = "";
 
+    // State transition debounce latch (Bug 1: rapid flicker / strobe fix)
+    private static volatile long lastStateTransitionMs = 0L;
+    private static final long STATE_DEBOUNCE_MS = 80L;
+
 
     // Telemetry: HyperDL
     private static volatile boolean isHyperDLActive = false;
@@ -729,7 +733,17 @@ public class HyperRingOverlay {
                     } else if (Intent.ACTION_SCREEN_ON.equals(act) || Intent.ACTION_USER_PRESENT.equals(act)) {
                         isScreenInteractive = true;
                         lastFrameNanos = System.nanoTime();
-                        wakeEngineLoop();
+                        // Bug fix: delay 350ms — on MIUI/HyperOS, pm.isInteractive() may still
+                        // return false immediately after ACTION_SCREEN_ON. debouncedWakeRunnable
+                        // checks checkScreenInteractive() and silently returns if false, leaving
+                        // the VSYNC loop permanently dead until the next external trigger.
+                        if (handler != null) {
+                            handler.postDelayed(new Runnable() {
+                                @Override public void run() {
+                                    if (isScreenInteractive) wakeEngineLoop();
+                                }
+                            }, 350);
+                        }
                     }
                 }
             }, screenFilter);
@@ -780,133 +794,116 @@ public class HyperRingOverlay {
         }
     };
 
-    private static final Runnable rebindRunnable150 = new Runnable() {
-        @Override
-        public void run() {
-            checkDisplayRebind();
-        }
-    };
-
-    private static final Runnable rebindRunnable400 = new Runnable() {
-        @Override
-        public void run() {
-            checkDisplayRebind();
-        }
-    };
-
     private static void scheduleRebindRetry() {
         if (handler == null) return;
+        // Bug 3: Single cancelable rebind — no staggered async delays that flood the looper
         handler.removeCallbacks(rebindRunnable);
-        handler.removeCallbacks(rebindRunnable150);
-        handler.removeCallbacks(rebindRunnable400);
-
-        // Immediate post rebind followed by rapid staggered retries (150ms, 400ms)
-        handler.post(rebindRunnable);
-        handler.postDelayed(rebindRunnable150, 150);
-        handler.postDelayed(rebindRunnable400, 400);
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            rebindRunnable.run();
+        } else {
+            handler.post(rebindRunnable);
+        }
     }
 
     private static void checkDisplayRebind() {
         if (handler == null) return;
-        Runnable r = new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    DisplayManager dm = (DisplayManager) sysContext.getSystemService(Context.DISPLAY_SERVICE);
-                    if (dm != null) {
-                        Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
-                        if (d != null) {
-                            defaultDisplay = d;
-                            Context dCtx = sysContext.createDisplayContext(defaultDisplay);
-                            if (dCtx != null) context = dCtx;
-                            WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
-                            if (wm != null) windowManager = wm;
-                        }
-                    }
-                    resolveDisplayMetrics();
-                    if (ringView != null && windowManager != null) {
-                        boolean attached = ringView.isAttachedToWindow() && ringView.getWindowToken() != null;
-                        if (!attached) {
-                            try {
-                                windowManager.removeViewImmediate(ringView);
-                            } catch (Throwable ignored) {}
-                            boolean readded = false;
-                            try {
-                                if (ringView.getParent() == null && params != null) {
-                                    params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
-                                    params.windowAnimations = 0;
-                                    try {
-                                        java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
-                                        int curPf = pf.getInt(params);
-                                        pf.setInt(params, curPf | 0x00000040); // PRIVATE_FLAG_NO_MOVE_ANIMATION
-                                    } catch (Throwable ignored2) {}
-                                    windowManager.addView(ringView, params);
-                                    readded = true;
-                                }
-                            } catch (Throwable ignored) {}
-                            if (!readded) {
-                                attachWindow();
-                                return;
-                            }
-                        } else if (params != null) {
+        // Bug 3: Always execute on main looper immediately — no async wrapper
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(new Runnable() {
+                @Override public void run() { checkDisplayRebind(); }
+            });
+            return;
+        }
+        try {
+            DisplayManager dm = (DisplayManager) sysContext.getSystemService(Context.DISPLAY_SERVICE);
+            if (dm != null) {
+                Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
+                if (d != null) {
+                    defaultDisplay = d;
+                    Context dCtx = sysContext.createDisplayContext(defaultDisplay);
+                    if (dCtx != null) context = dCtx;
+                    WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+                    if (wm != null) windowManager = wm;
+                }
+            }
+            resolveDisplayMetrics();
+
+            if (ringView != null && windowManager != null) {
+                boolean attached = ringView.isAttachedToWindow() && ringView.getWindowToken() != null;
+                if (!attached) {
+                    // Only attempt removal + re-add if actually detached
+                    try { windowManager.removeViewImmediate(ringView); } catch (Throwable ignored) {}
+                    boolean readded = false;
+                    try {
+                        if (ringView.getParent() == null && params != null) {
+                            // Bug 3: Always set FLAG_HARDWARE_ACCELERATED before re-add
                             params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
                             params.windowAnimations = 0;
                             try {
                                 java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
                                 int curPf = pf.getInt(params);
-                                pf.setInt(params, curPf | 0x00000040); // PRIVATE_FLAG_NO_MOVE_ANIMATION
+                                pf.setInt(params, curPf | 0x00000040);
                             } catch (Throwable ignored2) {}
-                            try {
-                                windowManager.updateViewLayout(ringView, params);
-                            } catch (Throwable ignored) {}
+                            windowManager.addView(ringView, params);
+                            readded = true;
                         }
-                    } else if (ringView == null) {
+                    } catch (Throwable ignored) {}
+                    if (!readded) {
                         attachWindow();
                         return;
                     }
-
-                    if (ringView != null) {
-                        boolean land = hideInLandscape && isLandscape() && currentIsland != STATE_CALIBRATION;
-                        if (land) {
-                            if (ringView.getVisibility() != View.GONE) {
-                                ringView.setVisibility(View.GONE);
-                            }
-                            if (isExpanded) isExpanded = false;
-                            if (params != null && windowManager != null) {
-                                params.width = 1;
-                                params.height = 1;
-                                params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-                                params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
-                                try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
-                            }
-                            return;
-                        } else if (currentIsland != STATE_IDLE) {
-                            if (ringView.getVisibility() != View.VISIBLE) {
-                                ringView.setVisibility(View.VISIBLE);
-                            }
-                            prepareWindowForTarget();
-                        } else if (!isCollapsing) {
-                            if (ringView.getVisibility() != View.GONE) {
-                                ringView.setVisibility(View.GONE);
-                            }
-                            prepareWindowForTarget();
-                        }
-                        ringView.requestLayout();
-                        ringView.invalidate();
-                    }
-                    wakeEngineLoop();
-                    // State recovery: if media was playing before screen recorder event, restore island
-                    if (isMediaPlaying && currentIsland == STATE_IDLE && masterEnabled) {
-                        showIsland(STATE_MEDIA, 0);
-                    }
-                } catch (Throwable ignored) {}
+                } else if (params != null) {
+                    // Bug 3: ringView.isAttachedToWindow() == true — do NOT detach, just update params in-place
+                    params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+                    params.windowAnimations = 0;
+                    try {
+                        java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
+                        int curPf = pf.getInt(params);
+                        pf.setInt(params, curPf | 0x00000040);
+                    } catch (Throwable ignored2) {}
+                    // Bug 3: Immediate layout update on main looper — no postDelayed
+                    try { windowManager.updateViewLayout(ringView, params); } catch (Throwable ignored) {}
+                }
+            } else if (ringView == null) {
+                attachWindow();
+                return;
             }
-        };
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            r.run();
-        } else {
-            handler.post(r);
-        }
+
+            if (ringView != null) {
+                boolean land = hideInLandscape && isLandscape() && currentIsland != STATE_CALIBRATION;
+                if (land) {
+                    if (ringView.getVisibility() != View.GONE) {
+                        ringView.setVisibility(View.GONE);
+                    }
+                    if (isExpanded) isExpanded = false;
+                    if (params != null && windowManager != null) {
+                        params.width = 1;
+                        params.height = 1;
+                        params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                        params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+                        try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
+                    }
+                    return;
+                } else if (currentIsland != STATE_IDLE) {
+                    if (ringView.getVisibility() != View.VISIBLE) {
+                        ringView.setVisibility(View.VISIBLE);
+                    }
+                    prepareWindowForTarget();
+                } else if (!isCollapsing) {
+                    if (ringView.getVisibility() != View.GONE) {
+                        ringView.setVisibility(View.GONE);
+                    }
+                    prepareWindowForTarget();
+                }
+                ringView.requestLayout();
+                ringView.invalidate();
+            }
+            wakeEngineLoop();
+            // State recovery: if media was playing before screen recorder event, restore island
+            if (isMediaPlaying && currentIsland == STATE_IDLE && masterEnabled) {
+                showIsland(STATE_MEDIA, 0);
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static void triggerChargingEvent() {
@@ -1277,12 +1274,8 @@ public class HyperRingOverlay {
             float viewW = springW.current;
 
             if (currentIsland == STATE_MEDIA) {
-                float artSize = dpToPx(50);
-                float holeRelY = (params != null) ? Math.max(0, (cutoutCenterY + yOffset) - params.y) : dpToPx(16);
-                boolean isCutoutCenter = !"left".equalsIgnoreCase(pillAlignment) && !"right".equalsIgnoreCase(pillAlignment);
-                boolean isFloatingBelow = !"cover".equalsIgnoreCase(cardPositionMode) && !notchMode;
-                float baseTopY = isFloatingBelow ? dpToPx(18) : (isCutoutCenter ? Math.max(dpToPx(24), holeRelY + cutoutRadius + dpToPx(6)) : dpToPx(18));
-                float artTop = baseTopY;
+                float artSize = dpToPx(48); // Bug 2: matches renderExpandedContent
+                float artTop = dpToPx(20);  // Bug 2: fixed top padding
 
                 // Row 1: Cast / Route icon glyph on top-right
                 float castBtnX = viewW - dpToPx(26);
@@ -1293,7 +1286,7 @@ public class HyperRingOverlay {
                 }
 
                 // Row 2: 5 buttons [Repeat/Shuffle] — [Prev] — [Play/Pause] — [Next] — [Favorite/Heart]
-                float btnY = artTop + artSize + dpToPx(24);
+                float btnY = artTop + artSize + dpToPx(22); // Bug 2: matches renderExpandedContent
                 float centerX = viewW / 2.0f;
                 float b1X = centerX - dpToPx(96);
                 float b2X = centerX - dpToPx(48);
@@ -1321,8 +1314,9 @@ public class HyperRingOverlay {
                     }
                 }
 
-                // Row 3: Full-width bottom progress track with monospace timestamps flanking the bar
-                float barY = btnY + dpToPx(28);
+                // Row 3: Seekbar anchored to card bottom — barY = curH - 24dp (Bug 2)
+                float curH = springH.current;
+                float barY = curH - dpToPx(24);
                 float barLeft = dpToPx(62);
                 float barW = viewW - dpToPx(124);
 
@@ -1684,9 +1678,9 @@ public class HyperRingOverlay {
             canvas.drawText(rightSub, curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (renderType == STATE_MEDIA) {
-            float artSize = dpToPx(50);
+            float artSize = dpToPx(48); // Bug 2: was 50dp
             float artLeft = dpToPx(20);
-            float artTop = isFloatingBelow ? dpToPx(18) : Math.max(dpToPx(18), baseTopY);
+            float artTop = dpToPx(20); // Bug 2: fixed top padding, no floating-below branch
             float curR = (springR != null) ? springR.current : dpToPx(24);
 
             // Atmospheric ambient gradient tinted by dominant album art color diffusing from bottom/center
@@ -1811,7 +1805,7 @@ public class HyperRingOverlay {
 
             if (controlsAlpha > 0.02f) {
                 // Row 2 (Controls): 5-button horizontal layout: [Repeat/Shuffle] — [Prev] — [Play/Pause] — [Next] — [Favorite/Heart]
-                float btnY = artTop + artSize + dpToPx(24);
+                float btnY = artTop + artSize + dpToPx(22); // Bug 2: was dpToPx(24), adjusted for 48dp art
                 float centerX = curW / 2.0f;
                 float b1X = centerX - dpToPx(96);
                 float b2X = centerX - dpToPx(48);
@@ -1839,8 +1833,8 @@ public class HyperRingOverlay {
                 // 5. Favorite / Heart
                 drawHeartIcon(canvas, b5X, btnY, dpToPx(15), paintIconFill, isMediaFavorite);
 
-                // Row 3 (Seekbar): Full-width bottom progress track with monospace timestamps flanking the bar
-                float barY = btnY + dpToPx(28);
+                // Row 3 (Seekbar): Anchored to card bottom — barY = curH - 24dp (Bug 2: was btnY + 28dp)
+                float barY = curH - dpToPx(24);
                 float barLeft = dpToPx(62);
                 float barW = curW - dpToPx(124);
                 float barH = dpToPx(3.5f);
@@ -1853,16 +1847,16 @@ public class HyperRingOverlay {
                 if (mediaTrackDuration > 0 && curPos > mediaTrackDuration) curPos = mediaTrackDuration;
                 float progressFraction = (mediaTrackDuration > 0) ? Math.max(0f, Math.min(1f, (float) curPos / (float) mediaTrackDuration)) : 0f;
 
-                // Timestamps flanking the seekbar
+                // Timestamps flanking the seekbar — drawn above the bar at barY - 8dp (Bug 2)
                 if (paintTextMonospace != null) {
                     paintTextMonospace.setTextSize(spToPx(10.5f));
                     paintTextMonospace.setAlpha(Math.min(255, (int) (controlsAlpha * 160)));
                     paintTextMonospace.setTextAlign(Paint.Align.LEFT);
-                    canvas.drawText(formatTimeMs(curPos), dpToPx(20), barY + dpToPx(4f), paintTextMonospace);
+                    canvas.drawText(formatTimeMs(curPos), dpToPx(20), barY - dpToPx(8), paintTextMonospace);
 
                     paintTextMonospace.setTextAlign(Paint.Align.RIGHT);
                     String remStr = (mediaTrackDuration > 0) ? "-" + formatTimeMs(Math.max(0, mediaTrackDuration - curPos)) : "--:--";
-                    canvas.drawText(remStr, curW - dpToPx(20), barY + dpToPx(4f), paintTextMonospace);
+                    canvas.drawText(remStr, curW - dpToPx(20), barY - dpToPx(8), paintTextMonospace);
                 }
 
                 // Progress track
@@ -2658,24 +2652,42 @@ public class HyperRingOverlay {
 
     public static void wakeEngineLoop() {
         if (handler == null) return;
-        handler.post(new Runnable() {
-            @Override
-            public void run() {
-                if (checkScreenInteractive()) {
-                    if (handler != null) handler.removeCallbacks(audioThrottleRunnable);
-                    lastFrameNanos = System.nanoTime();
-                    resolveTargetState(SystemClock.uptimeMillis());
-                    prepareWindowForTarget();
-                    if (ringView != null && ringView.getLayerType() != View.LAYER_TYPE_HARDWARE) {
-                        ringView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-                    }
-                    isLoopRunning = true;
-                    Choreographer.getInstance().removeFrameCallback(vsyncCallback);
-                    Choreographer.getInstance().postFrameCallback(vsyncCallback);
-                }
-            }
-        });
+        // Bug 1: Debounce rapid state transition wakeups — coalesce calls within 80ms window
+        long now = SystemClock.uptimeMillis();
+        if (now - lastStateTransitionMs < STATE_DEBOUNCE_MS) {
+            handler.removeCallbacks(debouncedWakeRunnable);
+            handler.postDelayed(debouncedWakeRunnable, STATE_DEBOUNCE_MS);
+            return;
+        }
+        lastStateTransitionMs = now;
+        handler.post(debouncedWakeRunnable);
     }
+
+    private static final Runnable debouncedWakeRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!checkScreenInteractive()) {
+                // Screen ON race: pm.isInteractive() not true yet — retry once after 400ms.
+                // Without this, the VSYNC loop stays dead after idle-long screen wake until
+                // the next hardware event (volume, charging, etc.) fires a new trigger.
+                if (isScreenInteractive && handler != null) {
+                    handler.postDelayed(this, 400);
+                }
+                return;
+            }
+            if (handler != null) handler.removeCallbacks(audioThrottleRunnable);
+            lastFrameNanos = System.nanoTime();
+            resolveTargetState(SystemClock.uptimeMillis());
+            prepareWindowForTarget();
+            if (ringView != null && ringView.getLayerType() != View.LAYER_TYPE_HARDWARE) {
+                ringView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+            }
+            isLoopRunning = true;
+            // Bug 1: Cancel any pending Choreographer callback before posting a new one
+            Choreographer.getInstance().removeFrameCallback(vsyncCallback);
+            Choreographer.getInstance().postFrameCallback(vsyncCallback);
+        }
+    };
 
     private static void checkDisplayOrientation() {
         if (defaultDisplay == null || ringView == null) return;
@@ -2780,7 +2792,7 @@ public class HyperRingOverlay {
     private static int getDefaultCardHeight(int state) {
         if (customCardHeight > 0) return dpToPx(customCardHeight);
         switch (state) {
-            case STATE_MEDIA:    return dpToPx(152);
+            case STATE_MEDIA:    return dpToPx(175); // Bug 2: was 152dp — increased to fit 3-row layout without clipping
             case STATE_CHARGING: return dpToPx(116);
             case STATE_VOLUME:   return dpToPx(92);
             default:             return dpToPx(100);
@@ -2916,31 +2928,27 @@ public class HyperRingOverlay {
             targetX = Math.max(0, Math.min(displayWidthPx - newW, targetX));
         }
 
-        boolean changed = false;
-        if (params.width != newW || params.height != newH || params.y != reqY || params.flags != targetFlags) {
+        // Bug 1: Only commit params when dimensions actually differ by >= 1px (prevents strobe on rapid triggers)
+        boolean dimChanged = Math.abs(params.width - newW) >= 1 || Math.abs(params.height - newH) >= 1;
+        boolean posChanged = params.y != reqY || params.gravity != targetGravity || params.x != targetX;
+        boolean flagChanged = params.flags != targetFlags || params.windowAnimations != 0;
+
+        if (dimChanged || posChanged || flagChanged) {
             params.width = newW;
             params.height = newH;
             params.y = reqY;
             params.flags = targetFlags;
-            changed = true;
-        }
-
-        if (params.gravity != targetGravity || params.x != targetX) {
             params.gravity = targetGravity;
             params.x = targetX;
-            changed = true;
+            params.windowAnimations = 0;
         }
 
-        if (params.windowAnimations != 0) {
-            params.windowAnimations = 0;
-            changed = true;
-        }
         try {
             java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
             int curPf = pf.getInt(params);
             if ((curPf & 0x00000040) == 0) {
                 pf.setInt(params, curPf | 0x00000040); // PRIVATE_FLAG_NO_MOVE_ANIMATION
-                changed = true;
+                dimChanged = true; // force update to persist privateFlags
             }
         } catch (Throwable ignored) {}
 
@@ -2948,7 +2956,7 @@ public class HyperRingOverlay {
             ringView.setVisibility(View.VISIBLE);
         }
 
-        if (changed) {
+        if (dimChanged || posChanged || flagChanged) {
             try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
         }
     }
@@ -3109,6 +3117,13 @@ public class HyperRingOverlay {
                         if (currentIsland != STATE_IDLE) {
                             startCollapse();
                         }
+                    }
+
+                    // Watchdog: if an active island is showing but the VSYNC loop has stalled
+                    // (e.g. after screen-ON race where pm.isInteractive() returned false), force
+                    // a loop restart so the island does not freeze or stay invisible.
+                    if (!isLoopRunning && currentIsland != STATE_IDLE && !isCollapsing && masterEnabled) {
+                        wakeEngineLoop();
                     }
                 } catch (Throwable ignored) {}
             }
