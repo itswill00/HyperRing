@@ -1,5 +1,6 @@
 package com.hyperring;
 
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -179,6 +180,7 @@ public class HyperRingOverlay {
     private static volatile Bitmap currentCardArt = null;
     private static volatile int mediaDominantColor = Color.TRANSPARENT;
     private static volatile String lastArtKey = "";
+    private static volatile boolean userDismissedMedia = false;
 
     // Telemetry: Volume
     private static volatile int volumePercent = 50;
@@ -201,6 +203,7 @@ public class HyperRingOverlay {
     // State transition debounce latch (Bug 1: rapid flicker / strobe fix)
     private static volatile long lastStateTransitionMs = 0L;
     private static final long STATE_DEBOUNCE_MS = 80L;
+    private static volatile boolean isRebinding = false;
 
 
     // Telemetry: HyperDL
@@ -432,13 +435,6 @@ public class HyperRingOverlay {
         resolveDisplayMetrics();
         readConfig();
 
-        // Direct hardware telemetry and system state initialization
-        checkScreenInteractive();
-        queryBatteryHardware();
-        initAudioTelemetry();
-        queryTorchStatusNative();
-        queryMediaSessionNative();
-
         float initD = cutoutRadius * 2.0f;
 
         springW = new Spring(initD, springStiffness, springDamping);
@@ -449,6 +445,13 @@ public class HyperRingOverlay {
         crossfadeSpring = new Spring(1.0f, 480f, 0.92f);
 
         initGraphics();
+
+        // Direct hardware telemetry and system state initialization
+        checkScreenInteractive();
+        queryBatteryHardware();
+        initAudioTelemetry();
+        queryTorchStatusNative();
+        queryMediaSessionNative();
         registerSystemReceivers();
         startBackgroundWorkers();
         initStateFileObserver();
@@ -822,30 +825,32 @@ public class HyperRingOverlay {
                 dm.registerDisplayListener(new DisplayManager.DisplayListener() {
                     @Override
                     public void onDisplayAdded(int displayId) {
+                        // Strictly ignore non-default virtual displays (e.g. ScreenRecorder, Cast, MediaProjection)
+                        if (displayId != Display.DEFAULT_DISPLAY) return;
                         scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayRemoved(int displayId) {
+                        if (displayId != Display.DEFAULT_DISPLAY) return;
                         scheduleRebindRetry();
                     }
 
                     @Override
                     public void onDisplayChanged(int displayId) {
-                        if (displayId == Display.DEFAULT_DISPLAY) {
-                            if (defaultDisplay != null) {
-                                int curRot = defaultDisplay.getRotation();
-                                DisplayMetrics dm2 = new DisplayMetrics();
-                                defaultDisplay.getRealMetrics(dm2);
-                                if (curRot != lastDisplayRotation || dm2.widthPixels != lastDisplayW || dm2.heightPixels != lastDisplayH) {
-                                    lastDisplayRotation = curRot;
-                                    lastDisplayW = dm2.widthPixels;
-                                    lastDisplayH = dm2.heightPixels;
-                                    scheduleRebindRetry();
-                                }
-                            } else {
+                        if (displayId != Display.DEFAULT_DISPLAY) return;
+                        if (defaultDisplay != null) {
+                            int curRot = defaultDisplay.getRotation();
+                            DisplayMetrics dm2 = new DisplayMetrics();
+                            defaultDisplay.getRealMetrics(dm2);
+                            if (curRot != lastDisplayRotation || dm2.widthPixels != lastDisplayW || dm2.heightPixels != lastDisplayH) {
+                                lastDisplayRotation = curRot;
+                                lastDisplayW = dm2.widthPixels;
+                                lastDisplayH = dm2.heightPixels;
                                 scheduleRebindRetry();
                             }
+                        } else {
+                            scheduleRebindRetry();
                         }
                     }
                 }, handler);
@@ -879,164 +884,74 @@ public class HyperRingOverlay {
             });
             return;
         }
+        if (isRebinding) return;
+        isRebinding = true;
         try {
-            // Fix 3: Always re-acquire Display.DEFAULT_DISPLAY from DisplayManager so we are
-            // never bound to a dead VirtualDisplay surface left over from screen recording.
             DisplayManager dm = (DisplayManager) sysContext.getSystemService(Context.DISPLAY_SERVICE);
             if (dm != null) {
                 Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
                 if (d != null) {
                     defaultDisplay = d;
-                    // Create a fresh display context isolated from any VirtualDisplay context.
-                    Context dCtx = sysContext.createDisplayContext(defaultDisplay);
-                    if (dCtx != null) context = dCtx;
-                    WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
-                    if (wm != null) windowManager = wm;
                 }
             }
             resolveDisplayMetrics();
 
             if (ringView != null && windowManager != null) {
                 boolean attached = ringView.isAttachedToWindow() && ringView.getWindowToken() != null;
-                if (!attached) {
-                    // Delay 120ms to let WMS flush the VirtualDisplay surface before addView.
-                    handler.postDelayed(new Runnable() {
-                        @Override public void run() {
-                            try {
-                                try { windowManager.removeViewImmediate(ringView); } catch (Throwable ignored) {}
-                                boolean readded = false;
-                                if (ringView.getParent() == null && params != null) {
-                                    params.type = 2017;
-                                    params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-                                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
-                                    params.windowAnimations = 0;
-                                    // Fix 3: Null the token to discard any stale VirtualDisplay
-                                    // surface session token that causes BadTokenException when the
-                                    // screen recorder starts or stops.
-                                    params.token = null;
-                                    try {
-                                        java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
-                                        int curPf = pf.getInt(params);
-                                        pf.setInt(params, curPf | 0x00000040);
-                                    } catch (Throwable ignored2) {}
-                                    try {
-                                        windowManager.addView(ringView, params);
-                                        readded = true;
-                                    } catch (android.view.WindowManager.BadTokenException | IllegalStateException e) {
-                                        // Fix 3: Stale token / surface gone — retry after 350ms.
-                                        params.token = null;
-                                        handler.postDelayed(new Runnable() {
-                                            @Override public void run() { checkDisplayRebind(); }
-                                        }, 350);
-                                        return;
-                                    } catch (Throwable e) {
-                                        // Fallback to TYPE_APPLICATION_OVERLAY (2038)
-                                        params.type = 2038;
-                                        params.token = null;
-                                        try {
-                                            windowManager.addView(ringView, params);
-                                            readded = true;
-                                        } catch (android.view.WindowManager.BadTokenException | IllegalStateException e2) {
-                                            params.token = null;
-                                            handler.postDelayed(new Runnable() {
-                                                @Override public void run() { checkDisplayRebind(); }
-                                            }, 350);
-                                            return;
-                                        } catch (Throwable ignored3) {}
-                                    }
-                                }
-                                if (!readded) {
-                                    attachWindow();
-                                    return;
-                                }
-                                if (ringView != null && currentIsland != STATE_IDLE) {
-                                    if (ringView.getVisibility() != View.VISIBLE) {
-                                        ringView.setVisibility(View.VISIBLE);
-                                    }
-                                    prepareWindowForTarget();
-                                    ringView.requestLayout();
-                                    ringView.invalidate();
-                                }
-                                wakeEngineLoop();
-                                if (isMediaPlaying && currentIsland == STATE_IDLE && masterEnabled) {
-                                    showIsland(STATE_MEDIA, 0);
-                                }
-                            } catch (Throwable ignored) {}
-                        }
-                    }, 120);
-                    return;
-                } else if (params != null) {
-                    // ringView is attached — update params in-place, no detach needed.
-                    params.type = 2017;
-                    params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
-                    params.windowAnimations = 0;
-                    // Fix 3: null token prevents any lingering VirtualDisplay session from
-                    // being used for the updateViewLayout call.
-                    params.token = null;
-                    try {
-                        java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
-                        int curPf = pf.getInt(params);
-                        pf.setInt(params, curPf | 0x00000040);
-                    } catch (Throwable ignored2) {}
-                    try {
-                        windowManager.updateViewLayout(ringView, params);
-                    } catch (android.view.WindowManager.BadTokenException | IllegalStateException e) {
-                        // Fix 3: Token gone mid-flight (screen record stop) — full rebind after 350ms.
+                if (attached) {
+                    // Window is already healthy and attached to physical display.
+                    // Strictly preserve the existing WMS token and session; do NOT recreate context or call removeView.
+                    prepareWindowForTarget();
+                    if (ringView != null && currentIsland != STATE_IDLE && ringView.getVisibility() != View.VISIBLE) {
+                        ringView.setVisibility(View.VISIBLE);
+                    }
+                    wakeEngineLoop();
+                } else {
+                    // Surface was legitimately detached by WMS — perform clean recovery
+                    try { windowManager.removeViewImmediate(ringView); } catch (Throwable ignored) {}
+                    if (params != null) {
+                        params.type = 2017;
                         params.token = null;
-                        handler.postDelayed(new Runnable() {
-                            @Override public void run() { checkDisplayRebind(); }
-                        }, 350);
-                        return;
-                    } catch (Throwable ignored) {}
+                        params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
+                        params.windowAnimations = 0;
+                        try {
+                            windowManager.addView(ringView, params);
+                        } catch (Throwable t) {
+                            try {
+                                params.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
+                                windowManager.addView(ringView, params);
+                            } catch (Throwable ignored2) {}
+                        }
+                    }
+                    if (currentIsland != STATE_IDLE) {
+                        if (ringView != null && ringView.getVisibility() != View.VISIBLE) {
+                            ringView.setVisibility(View.VISIBLE);
+                        }
+                        prepareWindowForTarget();
+                        ringView.requestLayout();
+                        ringView.invalidate();
+                    }
+                    wakeEngineLoop();
+                    if (isMediaPlaying && currentIsland == STATE_IDLE && masterEnabled && !userDismissedMedia) {
+                        showIsland(STATE_MEDIA, 0);
+                    }
                 }
             } else if (ringView == null) {
                 attachWindow();
                 return;
             }
-
-            if (ringView != null) {
-                boolean land = hideInLandscape && isLandscape() && currentIsland != STATE_CALIBRATION;
-                if (land) {
-                    if (ringView.getVisibility() != View.GONE) {
-                        ringView.setVisibility(View.GONE);
-                    }
-                    if (isExpanded) isExpanded = false;
-                    if (params != null && windowManager != null) {
-                        params.width = 1;
-                        params.height = 1;
-                        params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-                        params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
-                        try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
-                    }
-                    return;
-                } else if (currentIsland != STATE_IDLE) {
-                    if (ringView.getVisibility() != View.VISIBLE) {
-                        ringView.setVisibility(View.VISIBLE);
-                    }
-                    prepareWindowForTarget();
-                } else if (!isCollapsing) {
-                    if (ringView.getVisibility() != View.GONE) {
-                        ringView.setVisibility(View.GONE);
-                    }
-                    prepareWindowForTarget();
-                }
-                ringView.requestLayout();
-                ringView.invalidate();
-            }
-            wakeEngineLoop();
-            if (isMediaPlaying && currentIsland == STATE_IDLE && masterEnabled) {
-                showIsland(STATE_MEDIA, 0);
-            }
-        } catch (Throwable ignored) {}
+        } finally {
+            isRebinding = false;
+        }
     }
 
     private static void triggerChargingEvent() {
-        if (autoExpandCharging) {
-            showIsland(STATE_CHARGING, expandTimeoutMs);
-            isExpanded = true;
-        } else {
-            showIsland(STATE_CHARGING, 4500);
+        if (!enableCharging) return;
+        long timeout = autoExpandCharging ? Math.max(expandTimeoutMs, 4500) : 4500;
+        showIsland(STATE_CHARGING, timeout);
+        if (autoExpandCharging && !previewLock) {
+            expandCard();
         }
     }
 
@@ -1097,7 +1012,9 @@ public class HyperRingOverlay {
 
             @Override
             public void onViewDetachedFromWindow(View v) {
-                scheduleRebindRetry();
+                if (!isRebinding) {
+                    scheduleRebindRetry();
+                }
             }
         });
 
@@ -1186,7 +1103,11 @@ public class HyperRingOverlay {
             }
         }
         if (currentIsland == STATE_IDLE) {
-            ringView.setVisibility(View.GONE);
+            if (isMediaPlaying && enableMedia && masterEnabled) {
+                showIsland(STATE_MEDIA, 0);
+            } else {
+                ringView.setVisibility(View.GONE);
+            }
         } else {
             ringView.setVisibility(View.VISIBLE);
             prepareWindowForTarget();
@@ -1288,6 +1209,9 @@ public class HyperRingOverlay {
                         return true;
                     } else if (dy < -dpToPx(16) && !isExpanded && currentIsland != STATE_IDLE && currentIsland != STATE_CALIBRATION) {
                         // Swipe UP on compact pill dismisses / hides the island immediately
+                        if (currentIsland == STATE_MEDIA) {
+                            userDismissedMedia = true;
+                        }
                         startCollapse();
                         return true;
                     }
@@ -1310,8 +1234,8 @@ public class HyperRingOverlay {
                                     skipMediaPrevious();
                                 }
                                 return true;
-                            } else if (currentIsland == STATE_NOTIFICATION) {
-                                // Swipe sideways dismisses active notification island
+                            } else {
+                                // Swipe sideways dismisses any active transient island
                                 performHaptic(0);
                                 startCollapse();
                                 return true;
@@ -1404,6 +1328,7 @@ public class HyperRingOverlay {
         resolveTargetState(SystemClock.uptimeMillis());
         prepareWindowForTarget();
         wakeEngineLoop();
+        persistStatusAsync();
     }
 
     private static void collapseCard() {
@@ -1434,6 +1359,7 @@ public class HyperRingOverlay {
         // at card dimensions by the isMorphFlight guard in prepareWindowForTarget().
         // The vsync loop's post-equilibrium check (line ~2435) will call it once settled.
         wakeEngineLoop();
+        persistStatusAsync();
     }
 
     private static void handleTap(float x, float y) {
@@ -1447,6 +1373,34 @@ public class HyperRingOverlay {
             if (currentIsland == STATE_MEDIA) {
                 float artSize = dpToPx(48);
                 float artTop = dpToPx(20);
+
+                // Row 1: Header (album art / title / artist) tap launches player app
+                if (y >= artTop && y <= artTop + artSize && x >= dpToPx(16) && x <= viewW - dpToPx(56)) {
+                    performHaptic(0);
+                    try {
+                        if (activeMediaController != null) {
+                            PendingIntent pi = activeMediaController.getSessionActivity();
+                            if (pi != null) {
+                                pi.send();
+                                collapseCard();
+                                return;
+                            } else {
+                                String pkg = activeMediaController.getPackageName();
+                                if (pkg != null && context != null) {
+                                    Intent li = context.getPackageManager().getLaunchIntentForPackage(pkg);
+                                    if (li != null) {
+                                        li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                        context.startActivity(li);
+                                        collapseCard();
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    collapseCard();
+                    return;
+                }
 
                 // Row 1: Cast / Route icon — flush to right margin at curW - 24dp
                 float castBtnX = viewW - dpToPx(24);
@@ -1502,6 +1456,23 @@ public class HyperRingOverlay {
                     return;
                 }
 
+                collapseCard();
+                return;
+            } else if (currentIsland == STATE_NOTIFICATION) {
+                // Tap on expanded notification opens originating application
+                performHaptic(0);
+                if (lastNotifPkg != null && !lastNotifPkg.isEmpty() && context != null) {
+                    try {
+                        Intent li = context.getPackageManager().getLaunchIntentForPackage(lastNotifPkg);
+                        if (li != null) {
+                            li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            context.startActivity(li);
+                            collapseCard();
+                            startCollapse();
+                            return;
+                        }
+                    } catch (Throwable ignored) {}
+                }
                 collapseCard();
                 return;
             } else if (currentIsland == STATE_TORCH) {
@@ -2686,10 +2657,17 @@ public class HyperRingOverlay {
         @Override
         public void run() {
             isHUNTucked = false;
-            if (currentIsland != STATE_IDLE || isMediaPlaying || isHyperDLActive) {
+            if (currentIsland != STATE_IDLE) {
+                if (ringView != null && ringView.getVisibility() != View.VISIBLE) {
+                    ringView.setVisibility(View.VISIBLE);
+                }
                 resolveTargetState(SystemClock.uptimeMillis());
                 prepareWindowForTarget();
                 wakeEngineLoop();
+            } else if (isMediaPlaying && enableMedia && !userDismissedMedia) {
+                showIsland(STATE_MEDIA, 0);
+            } else if (isHyperDLActive && enableHyperDL) {
+                showIsland(STATE_HYPERDL, 0);
             }
         }
     };
@@ -2725,25 +2703,19 @@ public class HyperRingOverlay {
         @Override
         public void run() {
             if (!previewLock && currentIsland != STATE_IDLE && !isCollapsing) {
+                boolean isTransient = (currentIsland == STATE_VOLUME
+                        || currentIsland == STATE_RINGER
+                        || currentIsland == STATE_NOTIFICATION
+                        || currentIsland == STATE_CHARGING
+                        || currentIsland == STATE_TORCH);
+
                 if (isExpanded) {
                     collapseCard();
-                    if (handler != null && expandTimeoutMs > 0) handler.postDelayed(this, expandTimeoutMs);
-                } else if (currentIsland == STATE_VOLUME) {
-                    // Bug 1: Inline volume-exit branch — do NOT rely on showIsland priority
-                    // stack re-check which may suppress the transition back to STATE_MEDIA.
-                    if (isMediaPlaying && enableMedia) {
-                        // Direct morph: switch state and animate without going through idle.
-                        currentIsland = STATE_MEDIA;
-                        activeIslandType = STATE_MEDIA;
-                        if (crossfadeSpring != null) {
-                            crossfadeSpring.snapTo(0.0f);
-                            crossfadeSpring.setParameters(480f, 0.92f);
-                            crossfadeSpring.setTarget(1.0f);
-                        }
-                        if (morphSpring != null) morphSpring.snapTo(0.0f);
-                        prepareWindowForTarget();
-                        wakeEngineLoop();
-                    } else if (isHyperDLActive && enableHyperDL) {
+                    if (isTransient && handler != null && expandTimeoutMs > 0) {
+                        handler.postDelayed(this, expandTimeoutMs);
+                    }
+                } else if (isTransient) {
+                    if (isHyperDLActive && enableHyperDL) {
                         currentIsland = STATE_HYPERDL;
                         activeIslandType = STATE_HYPERDL;
                         if (crossfadeSpring != null) {
@@ -2754,41 +2726,24 @@ public class HyperRingOverlay {
                         if (morphSpring != null) morphSpring.snapTo(0.0f);
                         prepareWindowForTarget();
                         wakeEngineLoop();
+                        persistStatusAsync();
+                    } else if (isMediaPlaying && enableMedia && !userDismissedMedia) {
+                        currentIsland = STATE_MEDIA;
+                        activeIslandType = STATE_MEDIA;
+                        if (crossfadeSpring != null) {
+                            crossfadeSpring.snapTo(0.0f);
+                            crossfadeSpring.setParameters(480f, 0.92f);
+                            crossfadeSpring.setTarget(1.0f);
+                        }
+                        if (morphSpring != null) morphSpring.snapTo(0.0f);
+                        prepareWindowForTarget();
+                        wakeEngineLoop();
+                        persistStatusAsync();
                     } else {
                         startCollapse();
                     }
                 } else {
-                    // All other transient states: restore background or collapse
-                    boolean isTransient = (currentIsland == STATE_RINGER
-                            || currentIsland == STATE_NOTIFICATION
-                            || currentIsland == STATE_TORCH);
-                    if (isTransient) {
-                        if (isHyperDLActive && enableHyperDL) {
-                            currentIsland = STATE_HYPERDL;
-                            activeIslandType = STATE_HYPERDL;
-                            if (crossfadeSpring != null) {
-                                crossfadeSpring.snapTo(0.0f);
-                                crossfadeSpring.setParameters(480f, 0.92f);
-                                crossfadeSpring.setTarget(1.0f);
-                            }
-                            if (morphSpring != null) morphSpring.snapTo(0.0f);
-                            prepareWindowForTarget();
-                            wakeEngineLoop();
-                        } else if (isMediaPlaying && enableMedia) {
-                            currentIsland = STATE_MEDIA;
-                            activeIslandType = STATE_MEDIA;
-                            if (crossfadeSpring != null) {
-                                crossfadeSpring.snapTo(0.0f);
-                                crossfadeSpring.setParameters(480f, 0.92f);
-                                crossfadeSpring.setTarget(1.0f);
-                            }
-                            if (morphSpring != null) morphSpring.snapTo(0.0f);
-                            prepareWindowForTarget();
-                            wakeEngineLoop();
-                        } else {
-                            startCollapse();
-                        }
-                    } else {
+                    if (currentIsland != STATE_MEDIA && currentIsland != STATE_HYPERDL) {
                         startCollapse();
                     }
                 }
@@ -2836,10 +2791,11 @@ public class HyperRingOverlay {
                 }
 
                 boolean wasExpanded = isExpanded || (morphSpring != null && (!morphSpring.isAtEquilibrium() || morphSpring.current > 0.0005f));
+                boolean wasSameStateExpanded = (currentIsland == state && isExpanded);
                 boolean wakingFromIdle = (currentIsland == STATE_IDLE || isCollapsing);
                 int oldState = currentIsland;
 
-                if (wasExpanded) {
+                if (wasExpanded && !wasSameStateExpanded) {
                     previousIsland = oldState;
                     if (morphSpring != null) {
                         morphSpring.setParameters(340f, 0.88f);
@@ -2848,7 +2804,7 @@ public class HyperRingOverlay {
                     if (crossfadeSpring != null) {
                         crossfadeSpring.snapTo(1.0f);
                     }
-                } else {
+                } else if (!wasSameStateExpanded) {
                     if (morphSpring != null) {
                         morphSpring.snapTo(0.0f);
                     }
@@ -2873,7 +2829,9 @@ public class HyperRingOverlay {
                 currentIsland = state;
                 activeIslandType = state;
                 isCollapsing = false;
-                isExpanded = false;
+                if (!wasSameStateExpanded) {
+                    isExpanded = false;
+                }
 
                 if (handler != null) handler.removeCallbacks(autoCollapseRunnable);
                 if (timeoutMs > 0 && !previewLock) {
@@ -2903,6 +2861,7 @@ public class HyperRingOverlay {
                 }
 
                 wakeEngineLoop();
+                persistStatusAsync();
             }
         };
 
@@ -2941,19 +2900,42 @@ public class HyperRingOverlay {
                 }
                 if (isCollapsing || currentIsland == STATE_IDLE) return;
                 performHaptic(0);
-                if (!isExpanded && (currentIsland == STATE_VOLUME || currentIsland == STATE_NOTIFICATION || currentIsland == STATE_RINGER) && isMediaPlaying && enableMedia) {
-                    // Smoothly morph cross-fade back to active media pill instead of collapsing into hole and reopening
-                    currentIsland = STATE_MEDIA;
-                    activeIslandType = STATE_MEDIA;
-                    if (crossfadeSpring != null) {
-                        crossfadeSpring.snapTo(0.0f);
-                        crossfadeSpring.setParameters(480f, 0.92f);
-                        crossfadeSpring.setTarget(1.0f);
+
+                boolean isTransient = (currentIsland == STATE_VOLUME
+                        || currentIsland == STATE_NOTIFICATION
+                        || currentIsland == STATE_RINGER
+                        || currentIsland == STATE_CHARGING
+                        || currentIsland == STATE_TORCH);
+
+                if (!isExpanded && isTransient) {
+                    if (isHyperDLActive && enableHyperDL) {
+                        currentIsland = STATE_HYPERDL;
+                        activeIslandType = STATE_HYPERDL;
+                        if (crossfadeSpring != null) {
+                            crossfadeSpring.snapTo(0.0f);
+                            crossfadeSpring.setParameters(480f, 0.92f);
+                            crossfadeSpring.setTarget(1.0f);
+                        }
+                        if (morphSpring != null) morphSpring.snapTo(0.0f);
+                        prepareWindowForTarget();
+                        wakeEngineLoop();
+                        persistStatusAsync();
+                        return;
+                    } else if (isMediaPlaying && enableMedia && !userDismissedMedia) {
+                        // Smoothly morph cross-fade back to active media pill instead of collapsing into hole and reopening
+                        currentIsland = STATE_MEDIA;
+                        activeIslandType = STATE_MEDIA;
+                        if (crossfadeSpring != null) {
+                            crossfadeSpring.snapTo(0.0f);
+                            crossfadeSpring.setParameters(480f, 0.92f);
+                            crossfadeSpring.setTarget(1.0f);
+                        }
+                        if (morphSpring != null) morphSpring.snapTo(0.0f);
+                        prepareWindowForTarget();
+                        wakeEngineLoop();
+                        persistStatusAsync();
+                        return;
                     }
-                    if (morphSpring != null) morphSpring.snapTo(0.0f);
-                    prepareWindowForTarget();
-                    wakeEngineLoop();
-                    return;
                 }
                 previewLock = false;
                 isCollapsing = true;
@@ -2983,6 +2965,7 @@ public class HyperRingOverlay {
                     Choreographer.getInstance().removeFrameCallback(vsyncCallback);
                     Choreographer.getInstance().postFrameCallback(vsyncCallback);
                 }
+                persistStatusAsync();
             }
         };
 
@@ -3328,17 +3311,9 @@ public class HyperRingOverlay {
         if (isCollapsing || currentIsland == STATE_IDLE) {
             isCollapsing = false;
             isExpanded = false;
-            if (isMediaPlaying && enableMedia) {
-                showIsland(STATE_MEDIA, 0);
-                return;
-            } else if (isHyperDLActive && enableHyperDL) {
-                showIsland(STATE_HYPERDL, 0);
-                return;
-            } else {
-                currentIsland = STATE_IDLE;
-                activeIslandType = STATE_IDLE;
-                previewLock = false;
-            }
+            currentIsland = STATE_IDLE;
+            activeIslandType = STATE_IDLE;
+            previewLock = false;
 
             // Instantly hide view on idle settlement to avoid any surface transform artifacts
             ringView.setVisibility(View.GONE);
@@ -3560,10 +3535,6 @@ public class HyperRingOverlay {
                                 tuckForHUN(4500);
                             }
 
-                            // Screen recording & VirtualDisplay lifecycle resilience
-                            if (line.contains("screenrecorder") || line.contains("ScreenRecorder") || line.contains("MediaProjection")) {
-                                scheduleRebindRetry();
-                            }
 
                             // Notification Event Detection — only match events log notification_enqueue
                             if (enableNotifications && line.contains("notification_enqueue")) {
@@ -3609,7 +3580,11 @@ public class HyperRingOverlay {
                                                     if (line.contains("alert=1") || line.contains("high") || line.contains("heads")) {
                                                         tuckForHUN(4500);
                                                     } else {
-                                                        showIsland(STATE_NOTIFICATION, 3500);
+                                                        long notifTimeout = autoExpandNotif ? Math.max(expandTimeoutMs, 4500) : 3500;
+                                                        showIsland(STATE_NOTIFICATION, notifTimeout);
+                                                        if (autoExpandNotif && !isExpanded && !previewLock) {
+                                                            expandCard();
+                                                        }
                                                     }
                                                 }
                                             }
@@ -3704,16 +3679,13 @@ public class HyperRingOverlay {
                 triggerChargingEvent();
             } else if (!chargingNow && isCharging) {
                 isCharging = false;
-                if (currentIsland == STATE_CHARGING) {
-                    if (isMediaPlaying && enableMedia) {
-                        currentIsland = STATE_MEDIA;
-                    } else if (isHyperDLActive && enableHyperDL) {
-                        currentIsland = STATE_HYPERDL;
-                    } else {
-                        currentIsland = STATE_IDLE;
-                    }
-                    isExpanded = false;
-                    wakeEngineLoop();
+                if (currentIsland == STATE_CHARGING && handler != null) {
+                    handler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            startCollapse();
+                        }
+                    });
                 }
             } else if (chargingNow && isCharging) {
                 readBatteryHardwareTelemetry();
@@ -4071,6 +4043,7 @@ public class HyperRingOverlay {
                     mediaArtist = finalArtist;
 
                     if (isMediaPlaying != prevPlay) {
+                        userDismissedMedia = false;
                         if (isMediaPlaying && enableMedia) {
                             if (!previewLock && currentIsland != STATE_CALIBRATION) {
                                 showIsland(STATE_MEDIA, 0);
@@ -4080,14 +4053,17 @@ public class HyperRingOverlay {
                                 startCollapse();
                             }
                         }
-                    } else if (isMediaPlaying && enableMedia && currentIsland == STATE_IDLE && !isCollapsing) {
+                    } else if (isMediaPlaying && enableMedia && currentIsland == STATE_IDLE && !isCollapsing && !userDismissedMedia) {
                         if (!previewLock && currentIsland != STATE_CALIBRATION) {
                             showIsland(STATE_MEDIA, 0);
                         }
                     }
 
-                    if (finalTrackChanged && autoExpandMedia && isMediaPlaying && !isExpanded && !previewLock) {
-                        expandCard();
+                    if (finalTrackChanged) {
+                        userDismissedMedia = false;
+                        if (autoExpandMedia && isMediaPlaying && !isExpanded && !previewLock) {
+                            expandCard();
+                        }
                     }
                     if (isMediaPlaying != prevPlay || finalTrackChanged || currentIsland == STATE_IDLE) {
                         wakeEngineLoop();
@@ -4500,6 +4476,7 @@ public class HyperRingOverlay {
                     readBatteryHardwareTelemetry();
                     triggerChargingEvent();
                 } else if (cmd.startsWith("media")) {
+                    userDismissedMedia = false;
                     currentIsland = STATE_MEDIA;
                     isMediaPlaying = true;
                     mediaTitle = "Starboy";
@@ -4571,6 +4548,7 @@ public class HyperRingOverlay {
                     previewLock = false;
                     startCollapse();
                 } else if (cmd.startsWith("expand")) {
+                    userDismissedMedia = false;
                     if (currentIsland == STATE_IDLE) {
                         currentIsland = STATE_MEDIA;
                         activeIslandType = STATE_MEDIA;
