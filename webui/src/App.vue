@@ -19,6 +19,14 @@
         <span class="badge-pill" :class="isDaemonAlive ? 'active' : 'standby'">
           {{ isDaemonAlive ? (daemonPid ? `PID ${daemonPid}` : 'Active') : 'Standby' }}
         </span>
+        <button
+          type="button"
+          class="theme-toggle-btn"
+          :title="`Theme: ${themeMode}`"
+          @click="cycleTheme"
+        >
+          <Icons :name="themeMode === 'auto' ? 'monitor' : (themeMode === 'light' ? 'sun' : 'moon')" :size="15" />
+        </button>
       </div>
     </header>
 
@@ -185,9 +193,9 @@
           @click="toggleReticle"
         >
           <div style="display: flex; align-items: center; gap: 10px;">
-            <Icons name="crosshair" :size="18" :style="{ color: isReticleActive ? '#ffffff' : 'var(--on-surface-variant)' }" />
+            <Icons name="crosshair" :size="18" :style="{ color: isReticleActive ? 'var(--on-primary-container)' : 'var(--on-surface-variant)' }" />
             <div>
-              <div class="row-title" :style="{ color: isReticleActive ? '#ffffff' : 'var(--on-surface)' }">
+              <div class="row-title" :style="{ color: isReticleActive ? 'var(--on-primary-container)' : 'var(--on-surface)' }">
                 {{ isReticleActive ? 'Alignment reticle active' : 'Show alignment reticle' }}
               </div>
               <div class="row-sub">
@@ -725,7 +733,7 @@
           </div>
 
           <!-- Pill Artwork Style Segmented Selector -->
-          <div class="preset-row" v-if="config.media_show_pill_art" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.06);">
+          <div class="preset-row" v-if="config.media_show_pill_art" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--surface-container-high);">
             <span class="row-meta-label">Pill artwork style</span>
             <div class="segment-container">
               <button
@@ -756,7 +764,7 @@
           </div>
 
           <!-- Waveform Visualizer Toggle -->
-          <div class="md3-list-row" style="padding: 12px 0; border-top: 1px solid rgba(255, 255, 255, 0.06);" @click="toggleConfig('media_show_waveform')">
+          <div class="md3-list-row" style="padding: 12px 0; border-top: 1px solid var(--surface-container-high);" @click="toggleConfig('media_show_waveform')">
             <div class="row-left">
               <div class="icon-badge secondary">
                 <Icons name="wave" :size="16" />
@@ -773,7 +781,7 @@
           </div>
 
           <!-- Audio Pulse Monochrome Presets -->
-          <div class="preset-row" v-if="config.media_show_waveform" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.06);">
+          <div class="preset-row" v-if="config.media_show_waveform" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--surface-container-high);">
             <span class="row-meta-label">Pulse accent</span>
             <div class="segment-container" style="gap: 4px;">
               <button
@@ -804,7 +812,7 @@
           </div>
 
           <!-- Dynamic Ambient Glow Toggle -->
-          <div class="md3-list-row" style="padding: 12px 0; border-top: 1px solid rgba(255, 255, 255, 0.06);" @click="toggleConfig('media_ambient_glow')">
+          <div class="md3-list-row" style="padding: 12px 0; border-top: 1px solid var(--surface-container-high);" @click="toggleConfig('media_ambient_glow')">
             <div class="row-left">
               <div class="icon-badge secondary">
                 <Icons name="eye" :size="16" />
@@ -821,7 +829,7 @@
           </div>
 
           <!-- Ambient Glow Opacity Slider -->
-          <div class="stepper-setting-block" v-if="config.media_ambient_glow" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.06);">
+          <div class="stepper-setting-block" v-if="config.media_ambient_glow" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--surface-container-high);">
             <div class="stepper-header">
               <span class="stepper-title">Ambient glow opacity</span>
               <span class="stepper-val">{{ config.media_glow_opacity }}%</span>
@@ -842,7 +850,7 @@
           </div>
 
           <!-- Marquee Scrolling Toggle -->
-          <div class="md3-list-row" style="padding: 12px 0; margin-bottom: 0; border-top: 1px solid rgba(255, 255, 255, 0.06);" @click="toggleConfig('media_marquee')">
+          <div class="md3-list-row" style="padding: 12px 0; margin-bottom: 0; border-top: 1px solid var(--surface-container-high);" @click="toggleConfig('media_marquee')">
             <div class="row-left">
               <div class="icon-badge secondary">
                 <Icons name="sliders" :size="16" />
@@ -1227,6 +1235,31 @@ const currentPreset = ref('center')
 const currentMotionProfile = ref('fluid')
 const showLogs = ref(false)
 const logContent = ref('')
+const themeMode = ref('auto')
+
+function applyTheme(mode) {
+  themeMode.value = mode
+  try {
+    localStorage.setItem('hyperring_theme', mode)
+  } catch (_) {}
+
+  if (mode === 'auto') {
+    document.documentElement.removeAttribute('data-theme')
+  } else {
+    document.documentElement.setAttribute('data-theme', mode)
+  }
+}
+
+function cycleTheme() {
+  if (themeMode.value === 'auto') {
+    applyTheme('dark')
+  } else if (themeMode.value === 'dark') {
+    applyTheme('light')
+  } else {
+    applyTheme('auto')
+  }
+  showToast(`Theme: ${themeMode.value}`)
+}
 
 let configDebounceTimer = null
 let statusPollInterval = null
@@ -1653,6 +1686,10 @@ function showToast(msg) {
 }
 
 onMounted(() => {
+  try {
+    const savedTheme = localStorage.getItem('hyperring_theme') || 'auto'
+    applyTheme(savedTheme)
+  } catch (_) {}
   loadConfiguration()
   queryStatusFile()
   statusPollInterval = setInterval(queryStatusFile, 3000)

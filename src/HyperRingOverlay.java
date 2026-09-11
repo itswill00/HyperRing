@@ -551,19 +551,34 @@ public class HyperRingOverlay {
         paintTextPrimary = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintTextPrimary.setColor(Color.WHITE);
         try {
-            paintTextPrimary.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+            paintTextPrimary.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        } catch (Throwable t) {
+            try { paintTextPrimary.setTypeface(Typeface.DEFAULT_BOLD); } catch (Throwable ignored) {}
+        }
+        try {
+            paintTextPrimary.setFontFeatureSettings("'tnum' 1");
         } catch (Throwable ignored) {}
 
         paintTextSecondary = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintTextSecondary.setColor(Color.argb(175, 255, 255, 255));
         try {
             paintTextSecondary.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        } catch (Throwable t) {
+            try { paintTextSecondary.setTypeface(Typeface.DEFAULT); } catch (Throwable ignored) {}
+        }
+        try {
+            paintTextSecondary.setFontFeatureSettings("'tnum' 1");
         } catch (Throwable ignored) {}
 
         paintTextTertiary = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintTextTertiary.setColor(Color.argb(110, 255, 255, 255));
         try {
             paintTextTertiary.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        } catch (Throwable t) {
+            try { paintTextTertiary.setTypeface(Typeface.DEFAULT); } catch (Throwable ignored) {}
+        }
+        try {
+            paintTextTertiary.setFontFeatureSettings("'tnum' 1");
         } catch (Throwable ignored) {}
 
         paintAccentGreen = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -610,7 +625,12 @@ public class HyperRingOverlay {
         paintTextMonospace = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintTextMonospace.setColor(Color.argb(175, 255, 255, 255));
         try {
-            paintTextMonospace.setTypeface(Typeface.MONOSPACE);
+            paintTextMonospace.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+        } catch (Throwable t) {
+            try { paintTextMonospace.setTypeface(Typeface.DEFAULT); } catch (Throwable ignored) {}
+        }
+        try {
+            paintTextMonospace.setFontFeatureSettings("'tnum' 1");
         } catch (Throwable ignored) {}
 
         paintIconStroke = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -1932,7 +1952,7 @@ public class HyperRingOverlay {
                 if (mediaTrackDuration > 0 && curPos > mediaTrackDuration) curPos = mediaTrackDuration;
                 float progressFraction = (mediaTrackDuration > 0) ? Math.max(0f, Math.min(1f, (float) curPos / (float) mediaTrackDuration)) : 0f;
 
-                // Monospace timestamps flanking seekbar at barY - 6dp
+                // Tabular system font timestamps flanking seekbar at barY - 6dp
                 if (paintTextMonospace != null) {
                     paintTextMonospace.setTextSize(spToPx(10.5f));
                     paintTextMonospace.setAlpha(Math.min(255, (int) (controlsAlpha * 160)));
