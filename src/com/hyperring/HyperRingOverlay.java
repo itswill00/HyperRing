@@ -10,6 +10,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.view.View;
+import android.graphics.Typeface;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
@@ -19,6 +20,21 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class HyperRingOverlay {
+
+    static {
+        initSystemFonts();
+    }
+
+    public static void initSystemFonts() {
+        try {
+            Method m = Typeface.class.getDeclaredMethod("loadPreinstalledSystemFontMap");
+            m.setAccessible(true);
+            m.invoke(null);
+            System.out.println("HyperRing: System font map loaded successfully");
+        } catch (Throwable t) {
+            System.err.println("HyperRing: Font map init note: " + t.getMessage());
+        }
+    }
 
     public static Context sysContext;
     public static Context context;
@@ -720,7 +736,7 @@ public class HyperRingOverlay {
                     } else {
                         showIsland(IslandState.STATE_TORCH, 2600);
                     }
-                } else if (cmd.startsWith("preview:pill") || cmd.startsWith("preview:compact") || "preview-pill".equalsIgnoreCase(cmd)) {
+                } else if (cmd.startsWith("preview:pill") || cmd.startsWith("preview:compact") || cmd.startsWith("preview:on") || "preview-pill".equalsIgnoreCase(cmd)) {
                     previewLock = true;
                     showIsland(IslandState.STATE_CHARGING, 0);
                     calibrationEndTime = 0L;

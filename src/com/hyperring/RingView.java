@@ -6,18 +6,17 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PorterDuff;
 import android.graphics.RectF;
+import android.graphics.Typeface;
 import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.view.Choreographer;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewOutlineProvider;
 
 public class RingView extends View {
 
@@ -146,28 +145,6 @@ public class RingView extends View {
         crossfadeSpring = new Spring(1.0f, 480f, 0.92f);
 
         initGraphics();
-
-        setOutlineProvider(new ViewOutlineProvider() {
-            @Override
-            public void getOutline(View view, Outline outline) {
-                if (springW == null || springH == null || springR == null) {
-                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), Math.round(IslandConfig.dpToPx(18)));
-                    return;
-                }
-                float pillW = springW.current;
-                float pillH = springH.current;
-                float pillRelX = WindowManagerController.getPillRelX(view.getWidth(), pillW);
-                float pillRelY = WindowManagerController.getPillRelY(view.getHeight(), pillH);
-                outline.setRoundRect(
-                        Math.round(pillRelX),
-                        Math.round(pillRelY),
-                        Math.round(pillRelX + pillW),
-                        Math.round(pillRelY + pillH),
-                        Math.max(Math.round(IslandConfig.dpToPx(4)), Math.round(springR.current))
-                );
-            }
-        });
-        setClipToOutline(true);
     }
 
     private void initGraphics() {
@@ -192,6 +169,23 @@ public class RingView extends View {
         paintTextTertiary = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintTextTertiary.setColor(Color.argb(120, 255, 255, 255));
         try { paintTextTertiary.setFontFeatureSettings("'tnum' 1"); } catch (Throwable ignored) {}
+
+        Typeface tfBold = Typeface.DEFAULT_BOLD;
+        Typeface tfNormal = Typeface.DEFAULT;
+        try {
+            Typeface t = Typeface.create("sans-serif-medium", Typeface.BOLD);
+            if (t != null) tfBold = t;
+        } catch (Throwable ignored) {}
+        try {
+            Typeface t = Typeface.create("sans-serif", Typeface.NORMAL);
+            if (t != null) tfNormal = t;
+        } catch (Throwable ignored) {}
+
+        if (tfBold != null) paintTextPrimary.setTypeface(tfBold);
+        if (tfNormal != null) {
+            paintTextSecondary.setTypeface(tfNormal);
+            paintTextTertiary.setTypeface(tfNormal);
+        }
 
         paintAccentGreen = new Paint(Paint.ANTI_ALIAS_FLAG);
         paintAccentGreen.setColor(Color.parseColor("#34D399"));
@@ -415,7 +409,6 @@ public class RingView extends View {
             return;
         }
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
-        invalidateOutline();
         float pillW = springW.current;
         float pillH = springH.current;
 

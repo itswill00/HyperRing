@@ -267,15 +267,22 @@ public class WindowManagerController {
         try {
             params.type = 2017;
             windowManager.addView(ringView, params);
+            System.out.println("HyperRing window attached successfully as type 2017");
         } catch (Throwable t1) {
+            System.err.println("Failed to attach as 2017: " + t1.getMessage());
             try {
                 params.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
                 windowManager.addView(ringView, params);
+                System.out.println("HyperRing window attached as TYPE_APPLICATION_OVERLAY");
             } catch (Throwable t2) {
+                System.err.println("Failed to attach as 2038: " + t2.getMessage());
                 try {
                     params.type = 2032;
                     windowManager.addView(ringView, params);
-                } catch (Throwable ignored) {}
+                    System.out.println("HyperRing window attached as TYPE_ACCESSIBILITY_OVERLAY");
+                } catch (Throwable t3) {
+                    System.err.println("Failed to attach as 2032: " + t3.getMessage());
+                }
             }
         }
 
