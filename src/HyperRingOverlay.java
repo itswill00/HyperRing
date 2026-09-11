@@ -542,6 +542,11 @@ public class HyperRingOverlay {
 
     private static void resolveDisplayMetrics() {
         try {
+            DisplayManager dm = (DisplayManager) sysContext.getSystemService(Context.DISPLAY_SERVICE);
+            if (dm != null) {
+                Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
+                if (d != null) defaultDisplay = d;
+            }
             DisplayMetrics realMetrics = new DisplayMetrics();
             if (defaultDisplay != null && defaultDisplay.getDisplayId() == Display.DEFAULT_DISPLAY) {
                 defaultDisplay.getRealMetrics(realMetrics);
@@ -802,16 +807,16 @@ public class HyperRingOverlay {
                     } else if (Intent.ACTION_SCREEN_ON.equals(act) || Intent.ACTION_USER_PRESENT.equals(act)) {
                         isScreenInteractive = true;
                         lastFrameNanos = System.nanoTime();
-                        // Bug fix: delay 350ms — on MIUI/HyperOS, pm.isInteractive() may still
-                        // return false immediately after ACTION_SCREEN_ON. debouncedWakeRunnable
-                        // checks checkScreenInteractive() and silently returns if false, leaving
-                        // the VSYNC loop permanently dead until the next external trigger.
                         if (handler != null) {
                             handler.postDelayed(new Runnable() {
                                 @Override public void run() {
-                                    if (isScreenInteractive) wakeEngineLoop();
+                                    checkDisplayRebind();
+                                    wakeEngineLoop();
+                                    if (enableCharging) {
+                                        queryBatteryHardware();
+                                    }
                                 }
-                            }, 350);
+                            }, 250);
                         }
                     }
                 }
@@ -2771,14 +2776,19 @@ public class HyperRingOverlay {
 
     private static boolean isLandscape() {
         try {
+            DisplayManager dm = (DisplayManager) sysContext.getSystemService(Context.DISPLAY_SERVICE);
+            if (dm != null) {
+                Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
+                if (d != null) defaultDisplay = d;
+            }
             if (defaultDisplay != null) {
                 int rot = defaultDisplay.getRotation();
                 if (rot == Surface.ROTATION_90 || rot == Surface.ROTATION_270) {
                     return true;
                 }
-                DisplayMetrics dm = new DisplayMetrics();
-                defaultDisplay.getRealMetrics(dm);
-                if (dm.widthPixels > dm.heightPixels) {
+                DisplayMetrics metrics = new DisplayMetrics();
+                defaultDisplay.getRealMetrics(metrics);
+                if (metrics.widthPixels > metrics.heightPixels) {
                     return true;
                 }
             }
@@ -3034,11 +3044,10 @@ public class HyperRingOverlay {
         @Override
         public void run() {
             if (!checkScreenInteractive()) {
-                // Screen ON race: pm.isInteractive() not true yet — retry once after 400ms.
-                // Without this, the VSYNC loop stays dead after idle-long screen wake until
-                // the next hardware event (volume, charging, etc.) fires a new trigger.
-                if (isScreenInteractive && handler != null) {
-                    handler.postDelayed(this, 400);
+                // Screen ON race: pm.isInteractive() not true yet — retry once after 350ms.
+                if (handler != null) {
+                    handler.removeCallbacks(this);
+                    handler.postDelayed(this, 350);
                 }
                 return;
             }
@@ -3516,9 +3525,9 @@ public class HyperRingOverlay {
                 while (true) {
                     java.lang.Process p = null;
                     try {
-                        p = Runtime.getRuntime().exec(new String[]{
-                                "logcat", "-b", "main", "-b", "system", "-b", "events", "-v", "brief", "-T", "1"
-                        });
+                        ProcessBuilder pb = new ProcessBuilder("logcat", "-b", "main", "-b", "system", "-b", "events", "-v", "brief", "-T", "1");
+                        pb.redirectErrorStream(true);
+                        p = pb.start();
                         BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
                         String line;
                         Pattern flagPattern = Pattern.compile("flags=0x([0-9a-fA-F]+)");
@@ -3537,7 +3546,7 @@ public class HyperRingOverlay {
                                 break;
                             }
 
-                            if (!masterEnabled || !checkScreenInteractive()) continue;
+                            if (!masterEnabled) continue;
 
                             if (enableVolume && (line.contains("Volume controller visible: true")
                                     || line.contains("vol.MiuiVolumeDialog")
