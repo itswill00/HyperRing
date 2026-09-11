@@ -1187,6 +1187,9 @@ public class HyperRingOverlay {
         }
         if (currentIsland == STATE_IDLE) {
             ringView.setVisibility(View.GONE);
+        } else {
+            ringView.setVisibility(View.VISIBLE);
+            prepareWindowForTarget();
         }
     }
 
@@ -2761,9 +2764,27 @@ public class HyperRingOverlay {
                             || currentIsland == STATE_TORCH);
                     if (isTransient) {
                         if (isHyperDLActive && enableHyperDL) {
-                            showIsland(STATE_HYPERDL, 0);
+                            currentIsland = STATE_HYPERDL;
+                            activeIslandType = STATE_HYPERDL;
+                            if (crossfadeSpring != null) {
+                                crossfadeSpring.snapTo(0.0f);
+                                crossfadeSpring.setParameters(480f, 0.92f);
+                                crossfadeSpring.setTarget(1.0f);
+                            }
+                            if (morphSpring != null) morphSpring.snapTo(0.0f);
+                            prepareWindowForTarget();
+                            wakeEngineLoop();
                         } else if (isMediaPlaying && enableMedia) {
-                            showIsland(STATE_MEDIA, 0);
+                            currentIsland = STATE_MEDIA;
+                            activeIslandType = STATE_MEDIA;
+                            if (crossfadeSpring != null) {
+                                crossfadeSpring.snapTo(0.0f);
+                                crossfadeSpring.setParameters(480f, 0.92f);
+                                crossfadeSpring.setTarget(1.0f);
+                            }
+                            if (morphSpring != null) morphSpring.snapTo(0.0f);
+                            prepareWindowForTarget();
+                            wakeEngineLoop();
                         } else {
                             startCollapse();
                         }
@@ -2808,13 +2829,9 @@ public class HyperRingOverlay {
                     int incomingPri = statePriority(state);
                     int activePri   = statePriority(currentIsland);
                     if (incomingPri > activePri) {
-                        // Incoming has lower priority than current; suppress unless current has a timeout
-                        // (transient states have timeouts; persistent states like CHARGING/MEDIA do not)
-                        boolean currentIsTransient = (currentIsland == STATE_VOLUME
-                                || currentIsland == STATE_RINGER
-                                || currentIsland == STATE_NOTIFICATION
-                                || currentIsland == STATE_TORCH);
-                        if (!currentIsTransient) return;
+                        // Incoming state has strictly lower priority than active state.
+                        // Do not allow lower priority background events to hijack an active higher priority state.
+                        return;
                     }
                 }
 
@@ -2924,9 +2941,18 @@ public class HyperRingOverlay {
                 }
                 if (isCollapsing || currentIsland == STATE_IDLE) return;
                 performHaptic(0);
-                if (!isExpanded && currentIsland == STATE_VOLUME && isMediaPlaying && enableMedia) {
+                if (!isExpanded && (currentIsland == STATE_VOLUME || currentIsland == STATE_NOTIFICATION || currentIsland == STATE_RINGER) && isMediaPlaying && enableMedia) {
                     // Smoothly morph cross-fade back to active media pill instead of collapsing into hole and reopening
-                    showIsland(STATE_MEDIA, 0);
+                    currentIsland = STATE_MEDIA;
+                    activeIslandType = STATE_MEDIA;
+                    if (crossfadeSpring != null) {
+                        crossfadeSpring.snapTo(0.0f);
+                        crossfadeSpring.setParameters(480f, 0.92f);
+                        crossfadeSpring.setTarget(1.0f);
+                    }
+                    if (morphSpring != null) morphSpring.snapTo(0.0f);
+                    prepareWindowForTarget();
+                    wakeEngineLoop();
                     return;
                 }
                 previewLock = false;
@@ -3466,7 +3492,7 @@ public class HyperRingOverlay {
                     java.lang.Process p = null;
                     try {
                         p = Runtime.getRuntime().exec(new String[]{
-                                "logcat", "-b", "main", "-b", "system", "-b", "events", "-v", "brief"
+                                "logcat", "-b", "main", "-b", "system", "-b", "events", "-v", "brief", "-T", "1"
                         });
                         BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
                         String line;
@@ -3541,6 +3567,14 @@ public class HyperRingOverlay {
 
                             // Notification Event Detection — only match events log notification_enqueue
                             if (enableNotifications && line.contains("notification_enqueue")) {
+                                if (line.contains("category=transport")
+                                        || line.contains("channel=music")
+                                        || line.contains("channel=playback")
+                                        || line.contains("category=service")
+                                        || line.contains("category=sys")) {
+                                    continue;
+                                }
+
                                 // Parse: [uid,pid,pkg,id,tag,uid,Notification(... flags=0xNN ...),vis]
                                 Matcher fm = flagPattern.matcher(line);
                                 if (fm.find()) {
@@ -3557,6 +3591,9 @@ public class HyperRingOverlay {
                                     String[] parts = body.split(",");
                                     if (parts.length >= 3) {
                                         String pkg = parts[2].trim();
+                                        if (activeMediaController != null && pkg.equalsIgnoreCase(activeMediaController.getPackageName())) {
+                                            continue;
+                                        }
                                         if (isUserFacingPackage(pkg)) {
                                             // Debounce: ignore same package within 3s
                                             long nowMs = SystemClock.uptimeMillis();
@@ -3780,6 +3817,9 @@ public class HyperRingOverlay {
     private static boolean isUserFacingPackage(String pkg) {
         if (pkg == null || pkg.isEmpty()) return false;
         String p = pkg.toLowerCase(Locale.US);
+        if (activeMediaController != null && p.equalsIgnoreCase(activeMediaController.getPackageName())) {
+            return false;
+        }
         // Block system and MIUI infrastructure packages
         if (p.equals("android")
                 || p.startsWith("com.android.")
