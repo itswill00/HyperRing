@@ -101,6 +101,38 @@
       <line x1="20" y1="11" x2="20" y2="13" />
     </g>
 
+    <g v-else-if="name === 'bell' || name === 'notification'">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </g>
+
+    <g v-else-if="name === 'volume'">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+    </g>
+
+    <g v-else-if="name === 'vibrate'">
+      <path d="M2 8v8" />
+      <path d="M22 8v8" />
+      <rect x="6" y="5" width="12" height="14" rx="2" />
+    </g>
+
+    <g v-else-if="name === 'image'">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <polyline points="21 15 16 10 5 21" />
+    </g>
+
+    <g v-else-if="name === 'sparkles' || name === 'haptic'">
+      <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3L12 3z" />
+    </g>
+
+    <g v-else-if="name === 'eye-off'">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </g>
+
     <g v-else-if="name === 'minus'">
       <line x1="5" y1="12" x2="19" y2="12" />
     </g>

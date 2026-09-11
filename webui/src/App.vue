@@ -156,8 +156,8 @@
                 borderRadius: simCardRadius + 'px'
               }"
             >
-              <span style="font-size: 8px; color: #fff; opacity: 0.9; font-weight: 600;">{{ liveState.media_title || 'Now Playing' }}</span>
-              <span style="font-size: 7px; color: #9ea3b2;">{{ liveState.media_artist || 'Expanded Card' }}</span>
+              <span style="font-size: 8px; color: var(--on-surface); opacity: 0.9; font-weight: 600;">{{ liveState.media_title || 'Now Playing' }}</span>
+              <span style="font-size: 7px; color: var(--on-surface-variant);">{{ liveState.media_artist || 'Expanded Card' }}</span>
             </div>
             <!-- Simulated Pill -->
             <div
@@ -170,8 +170,8 @@
                 height: simPillHeight + 'px'
               }"
             >
-              <span style="font-size: 8px; color: #9ea3b2; opacity: 0.85;">{{ liveState.battery_pct || 100 }}%</span>
-              <span style="font-size: 8px; color: #f0f2f5; opacity: 0.85;">Hyper</span>
+              <span style="font-size: 8px; color: var(--on-surface-variant); opacity: 0.85;">{{ liveState.battery_pct || 100 }}%</span>
+              <span style="font-size: 8px; color: var(--on-surface); opacity: 0.85;">Hyper</span>
             </div>
             <!-- Physical Camera Cutout -->
             <div
@@ -663,7 +663,7 @@
           <div class="md3-list-row" @click="toggleConfig('enable_ringer')">
             <div class="row-left">
               <div class="icon-badge secondary">
-                <Icons name="circle" :size="16" />
+                <Icons name="vibrate" :size="16" />
               </div>
               <div class="row-meta">
                 <div class="row-title">Ringer mode</div>
@@ -680,7 +680,7 @@
           <div class="md3-list-row" @click="toggleConfig('enable_notifications')">
             <div class="row-left">
               <div class="icon-badge secondary">
-                <Icons name="lens" :size="16" />
+                <Icons name="bell" :size="16" />
               </div>
               <div class="row-meta">
                 <div class="row-title">Notifications</div>
@@ -714,7 +714,7 @@
           <div class="md3-list-row" style="padding: 12px 0;" @click="toggleConfig('enable_haptics')">
             <div class="row-left">
               <div class="icon-badge secondary">
-                <Icons name="circle" :size="16" />
+                <Icons name="sparkles" :size="16" />
               </div>
               <div class="row-meta">
                 <div class="row-title">Haptic micro-feedback</div>
@@ -736,7 +736,7 @@
           <div class="md3-list-row" style="padding: 12px 0;" @click="toggleConfig('media_show_pill_art')">
             <div class="row-left">
               <div class="icon-badge secondary">
-                <Icons name="circle" :size="16" />
+                <Icons name="image" :size="16" />
               </div>
               <div class="row-meta">
                 <div class="row-title">Show album art in compact pill</div>
@@ -941,7 +941,7 @@
           <div class="md3-list-row" @click="toggleConfig('stealth_ring_idle')">
             <div class="row-left">
               <div class="icon-badge secondary">
-                <Icons name="circle" :size="16" />
+                <Icons name="eye-off" :size="16" />
               </div>
               <div class="row-meta">
                 <div class="row-title">Stealth idle</div>
@@ -1074,7 +1074,7 @@
             <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
               <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">Battery / Power</div>
               <div style="color: var(--on-surface); font-weight: 600;">
-                {{ liveState.battery_pct }}% {{ liveState.battery_charging ? '⚡ Charging' : '• Battery' }}
+                {{ liveState.battery_pct }}% · {{ liveState.battery_charging ? 'Charging' : 'Discharging' }}
               </div>
             </div>
             <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
@@ -1108,11 +1108,11 @@
               <span>Volume</span>
             </button>
             <button type="button" class="sim-chip" @click="sendTrigger('ringer')">
-              <Icons name="circle" :size="14" />
+              <Icons name="vibrate" :size="14" />
               <span>Ringer</span>
             </button>
             <button type="button" class="sim-chip" @click="sendTrigger('notification')">
-              <Icons name="lens" :size="14" />
+              <Icons name="bell" :size="14" />
               <span>Notif</span>
             </button>
             <button type="button" class="sim-chip" @click="sendTrigger('torch')">
@@ -1220,7 +1220,6 @@ const config = reactive({
   enable_torch: true,
   enable_haptics: true,
   enable_hyperdl: true,
-  enable_hypercore: true,
   stealth_ring_idle: false,
   hide_in_landscape: true,
   spring_stiffness: 380.0,
@@ -1240,7 +1239,6 @@ const liveState = reactive({
   media_playing: false,
   battery_pct: 100,
   battery_charging: false,
-  hypercore_profile: 'Interactive',
   hyperdl_active: false,
   hyperdl_speed: '0 MB/s',
   hyperdl_progress: 0
@@ -1637,7 +1635,6 @@ function resetDefaults() {
     enable_notifications: true,
     enable_torch: true,
     enable_hyperdl: true,
-    enable_hypercore: true,
     stealth_ring_idle: false,
     hide_in_landscape: true,
     spring_stiffness: 340.0,
