@@ -331,7 +331,6 @@ public class HyperRingOverlay {
     private static RectF tempRectF;
     private static final RectF artRectF = new RectF();
     private static final Path artClipPath = new Path();
-    private static final Path tempClipPath = new Path();
     private static RadialGradient cachedGlowGradient = null;
     private static int cachedGlowColor = 0;
     private static float cachedGlowW = -1f;
@@ -341,9 +340,12 @@ public class HyperRingOverlay {
     private static float cachedMarqueeLeft = -1f;
     private static float cachedMarqueeRight = -1f;
 
+    private static final Path smoothSquirclePath = new Path();
+
     // Touch gesture tracking
     private static float touchDownY = 0f;
     private static float touchDownX = 0f;
+    private static long touchDownTime = 0L;
 
     // Timing
     private static long lastFrameNanos = 0L;
@@ -1241,6 +1243,7 @@ public class HyperRingOverlay {
                     }
                     touchDownX = x;
                     touchDownY = y;
+                    touchDownTime = SystemClock.uptimeMillis();
                     return true;
 
                 case MotionEvent.ACTION_MOVE:
@@ -1251,12 +1254,37 @@ public class HyperRingOverlay {
                     } else if (dy < -dpToPx(14) && isExpanded) {
                         collapseCard();
                         return true;
+                    } else if (dy < -dpToPx(16) && !isExpanded && currentIsland != STATE_IDLE && currentIsland != STATE_CALIBRATION) {
+                        // Swipe UP on compact pill dismisses / hides the island immediately
+                        startCollapse();
+                        return true;
                     }
                     return true;
 
                 case MotionEvent.ACTION_UP:
                     float totalDistX = Math.abs(x - touchDownX);
                     float totalDistY = Math.abs(y - touchDownY);
+                    long duration = SystemClock.uptimeMillis() - touchDownTime;
+
+                    // Horizontal flick gesture on compact pill
+                    if (!isExpanded && currentIsland != STATE_IDLE && currentIsland != STATE_CALIBRATION) {
+                        float deltaX = x - touchDownX;
+                        if (Math.abs(deltaX) > dpToPx(28) && totalDistY < dpToPx(24) && duration < 500) {
+                            if (currentIsland == STATE_MEDIA) {
+                                if (deltaX > 0) {
+                                    skipMediaNext();
+                                } else {
+                                    skipMediaPrevious();
+                                }
+                                return true;
+                            } else if (currentIsland == STATE_NOTIFICATION) {
+                                // Swipe sideways dismisses active notification island
+                                startCollapse();
+                                return true;
+                            }
+                        }
+                    }
+
                     if (totalDistX < dpToPx(24) && totalDistY < dpToPx(24)) {
                         handleTap(x - pillRelX, y - pillRelY);
                     }
@@ -1447,6 +1475,56 @@ public class HyperRingOverlay {
         }
     }
 
+    private static void buildSmoothSquirclePath(Path path, float w, float h, float r, float smoothing) {
+        path.reset();
+        if (w <= 0f || h <= 0f) return;
+        float minDim = Math.min(w, h);
+        float maxR = minDim / 2.0f;
+        r = Math.min(r, maxR);
+        if (r <= 0.5f) {
+            path.addRect(0, 0, w, h, Path.Direction.CW);
+            return;
+        }
+        if (r >= maxR * 0.95f) {
+            tempRectF.set(0, 0, w, h);
+            path.addRoundRect(tempRectF, r, r, Path.Direction.CW);
+            return;
+        }
+
+        float s = Math.min(Math.max(smoothing, 0.0f), 1.0f);
+        float a = Math.min(minDim / 2.0f, r * (1.0f + s * 0.45f));
+        float k = 0.55228475f;
+        float m = a * (1.0f - k);
+
+        path.moveTo(a, 0);
+        path.lineTo(w - a, 0);
+        path.cubicTo(w - m, 0, w, m, w, a);
+        path.lineTo(w, h - a);
+        path.cubicTo(w, h - m, w - m, h, w - a, h);
+        path.lineTo(a, h);
+        path.cubicTo(m, h, 0, h - m, 0, h - a);
+        path.lineTo(0, a);
+        path.cubicTo(0, m, m, 0, a, 0);
+        path.close();
+    }
+
+    private static int getActiveAccentColor() {
+        switch (currentIsland) {
+            case STATE_MEDIA:
+                return (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
+            case STATE_CHARGING:
+                return Color.parseColor("#34D399");
+            case STATE_VOLUME:
+                return Color.parseColor("#A855F7");
+            case STATE_NOTIFICATION:
+                return Color.parseColor("#60A5FA");
+            case STATE_HYPERDL:
+                return Color.parseColor("#3B82F6");
+            default:
+                return Color.TRANSPARENT;
+        }
+    }
+
     private static void renderIsland(Canvas canvas, float w, float h) {
         if (w <= 0 || h <= 0) return;
 
@@ -1481,23 +1559,32 @@ public class HyperRingOverlay {
         float curR = springR.current;
         tempRectF.set(0, 0, w, h);
 
+        // Build continuous G2 curvature squircle path for authentic organic geometry
+        buildSmoothSquirclePath(smoothSquirclePath, w, h, curR, 0.65f);
+
         // OLED Black Surface
-        canvas.drawRoundRect(tempRectF, curR, curR, paintOledBlack);
+        canvas.drawPath(smoothSquirclePath, paintOledBlack);
 
         float contentAlpha = springContentAlpha.current;
 
-        // Specular ambient boundary (fades smoothly with content alpha)
-        int borderAlpha = Math.min(60, Math.max(0, (int) (contentAlpha * 60)));
+        // Specular ambient boundary & luminescent accent glow (inspired by HyperIsland IslandOuterGlowHook)
+        int borderAlpha = Math.min(65, Math.max(0, (int) (contentAlpha * 65)));
         if (borderAlpha > 0 && (currentIsland != STATE_IDLE || isExpanded || isCollapsing)) {
-            paintBorder.setAlpha(borderAlpha);
-            canvas.drawRoundRect(tempRectF, curR, curR, paintBorder);
+            int accentTint = getActiveAccentColor();
+            if (accentTint != Color.TRANSPARENT) {
+                int r = (Color.red(accentTint) + 255 * 2) / 3;
+                int g = (Color.green(accentTint) + 255 * 2) / 3;
+                int b = (Color.blue(accentTint) + 255 * 2) / 3;
+                paintBorder.setColor(Color.argb(borderAlpha, r, g, b));
+            } else {
+                paintBorder.setColor(Color.argb(borderAlpha, 255, 255, 255));
+            }
+            canvas.drawPath(smoothSquirclePath, paintBorder);
         }
 
         if (contentAlpha > 0.04f) {
             canvas.save();
-            tempClipPath.reset();
-            tempClipPath.addRoundRect(tempRectF, curR, curR, Path.Direction.CW);
-            canvas.clipPath(tempClipPath);
+            canvas.clipPath(smoothSquirclePath);
 
             float compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
             int cardState = (previousIsland != STATE_IDLE && !isExpanded) ? previousIsland : currentIsland;
