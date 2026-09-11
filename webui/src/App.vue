@@ -702,39 +702,6 @@
             </label>
           </div>
 
-          <!-- HyperDL Engine -->
-          <div class="md3-list-row" @click="toggleConfig('enable_hyperdl')">
-            <div class="row-left">
-              <div class="icon-badge secondary">
-                <Icons name="download" :size="16" />
-              </div>
-              <div class="row-meta">
-                <div class="row-title">Downloads</div>
-                <div class="row-sub">HyperDL background transfer rate</div>
-              </div>
-            </div>
-            <label class="md3-switch" @click.stop>
-              <input type="checkbox" v-model="config.enable_hyperdl" @change="saveConfig" />
-              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-            </label>
-          </div>
-
-          <!-- HyperCore Governor -->
-          <div class="md3-list-row" @click="toggleConfig('enable_hypercore')">
-            <div class="row-left">
-              <div class="icon-badge secondary">
-                <Icons name="chip" :size="16" />
-              </div>
-              <div class="row-meta">
-                <div class="row-title">HyperCore sync</div>
-                <div class="row-sub">Kernel profile on expanded card</div>
-              </div>
-            </div>
-            <label class="md3-switch" @click.stop>
-              <input type="checkbox" v-model="config.enable_hypercore" @change="saveConfig" />
-              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
-            </label>
-          </div>
         </section>
 
         <!-- HyperOS Media Experience -->
@@ -1092,9 +1059,9 @@
               </div>
             </div>
             <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
-              <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">HyperCore / HyperDL</div>
+              <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">Overlay Daemon</div>
               <div style="color: var(--on-surface); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                {{ liveState.hyperdl_active ? `DL: ${liveState.hyperdl_speed}` : (liveState.hypercore_profile || 'Default') }}
+                {{ daemonPid ? `PID ${daemonPid} (Active)` : 'Standby' }}
               </div>
             </div>
           </div>
@@ -1127,9 +1094,9 @@
               <Icons name="power" :size="14" />
               <span>Torch</span>
             </button>
-            <button type="button" class="sim-chip" @click="sendTrigger('hyperdl')">
-              <Icons name="download" :size="14" />
-              <span>Download</span>
+            <button type="button" class="sim-chip" @click="toggleReticle">
+              <Icons name="crosshair" :size="14" />
+              <span>Reticle</span>
             </button>
             <button type="button" class="sim-chip" @click="sendTrigger('idle')">
               <Icons name="check" :size="14" />
