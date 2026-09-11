@@ -35,11 +35,6 @@ case "$1" in
         echo "Sent trigger: $1"
         exit 0
         ;;
-    hyperdl*|download*|test-download*)
-        echo "$1" > "$MODDIR/state/trigger.cmd"
-        echo "Sent trigger: $1"
-        exit 0
-        ;;
     calibrate*)
         echo "$1" > "$MODDIR/state/trigger.cmd"
         echo "Sent trigger: $1"

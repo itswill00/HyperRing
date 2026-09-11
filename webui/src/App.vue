@@ -1219,7 +1219,6 @@ const config = reactive({
   enable_notifications: true,
   enable_torch: true,
   enable_haptics: true,
-  enable_hyperdl: true,
   stealth_ring_idle: false,
   hide_in_landscape: true,
   spring_stiffness: 380.0,
@@ -1238,10 +1237,7 @@ const liveState = reactive({
   media_artist: '',
   media_playing: false,
   battery_pct: 100,
-  battery_charging: false,
-  hyperdl_active: false,
-  hyperdl_speed: '0 MB/s',
-  hyperdl_progress: 0
+  battery_charging: false
 })
 
 const isDaemonAlive = ref(true)
@@ -1634,7 +1630,6 @@ function resetDefaults() {
     enable_ringer: true,
     enable_notifications: true,
     enable_torch: true,
-    enable_hyperdl: true,
     stealth_ring_idle: false,
     hide_in_landscape: true,
     spring_stiffness: 340.0,

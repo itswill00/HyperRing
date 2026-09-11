@@ -74,8 +74,6 @@ Settings live in `state/config.json` and update dynamically without restarting t
   "enable_ringer": true,
   "enable_notifications": true,
   "enable_torch": true,
-  "enable_hyperdl": true,
-  "enable_hypercore": true,
   "stealth_ring_idle": false,
   "hide_in_landscape": true,
   "spring_stiffness": 380.0,

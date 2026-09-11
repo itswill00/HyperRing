@@ -121,8 +121,6 @@ public class HyperRingOverlay {
     private static boolean enableRinger        = true;
     private static boolean enableNotifications = true;
     private static boolean enableTorch         = true;
-    private static boolean enableHyperDL       = true;
-    private static boolean enableHyperCore     = true;
     private static boolean stealthRingIdle     = false;
     private static boolean hideInLandscape     = true;
     private static float springStiffness       = 340.0f;
@@ -142,9 +140,8 @@ public class HyperRingOverlay {
     public static final int STATE_VOLUME       = 3;
     public static final int STATE_RINGER       = 4;
     public static final int STATE_NOTIFICATION = 5;
-    public static final int STATE_HYPERDL      = 6;
-    public static final int STATE_TORCH        = 7;
-    public static final int STATE_CALIBRATION  = 8;
+    public static final int STATE_TORCH        = 6;
+    public static final int STATE_CALIBRATION  = 7;
 
     private static volatile int currentIsland = STATE_IDLE;
     private static volatile int activeIslandType = STATE_IDLE;
@@ -165,7 +162,6 @@ public class HyperRingOverlay {
     private static volatile String chargeWattStr = "0.0W";
     private static volatile String chargeCurrentStr = "0mA";
     private static volatile String batteryTempStr = "";
-    private static volatile String hyperCoreProfile = "Default";
 
     // Telemetry: Media
     private static volatile String mediaTitle = "No active playback";
@@ -206,11 +202,6 @@ public class HyperRingOverlay {
     private static volatile boolean isRebinding = false;
 
 
-    // Telemetry: HyperDL
-    private static volatile boolean isHyperDLActive = false;
-    private static volatile String hyperDLSpeed = "0 MB/s";
-    private static volatile int hyperDLProgress = 0;
-    private static volatile String hyperDLFile = "Download";
     private static volatile long lastStatusPersist = 0L;
 
     // Fourth-Order Runge-Kutta (RK4) Harmonic Spring Solver
@@ -1533,8 +1524,6 @@ public class HyperRingOverlay {
                 return Color.parseColor("#A855F7");
             case STATE_NOTIFICATION:
                 return Color.parseColor("#60A5FA");
-            case STATE_HYPERDL:
-                return Color.parseColor("#3B82F6");
             default:
                 return Color.TRANSPARENT;
         }
@@ -1789,15 +1778,6 @@ public class HyperRingOverlay {
             paintTextPrimary.setTextAlign(textAlign);
             paintTextPrimary.setAlpha(intAlpha);
             canvas.drawText("Torch", textCenterX, centerY + dpToPx(4), paintTextPrimary);
-
-        } else if (renderType == STATE_HYPERDL) {
-            paintAccentCyan.setAlpha(intAlpha);
-            drawDownloadIcon(canvas, iconCenterX, centerY, dpToPx(10), paintAccentCyan);
-
-            paintTextPrimary.setTextSize(spToPx(11));
-            paintTextPrimary.setTextAlign(textAlign);
-            paintTextPrimary.setAlpha(intAlpha);
-            canvas.drawText(hyperDLSpeed, textCenterX, centerY + dpToPx(4), paintTextPrimary);
         }
     }
 
@@ -1881,7 +1861,7 @@ public class HyperRingOverlay {
             float fillW = barW * fillRatio;
             canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + fillW, barY + dpToPx(6)), dpToPx(3), dpToPx(3), paintAccentGreen);
 
-            // Row 3: Power telemetry and HyperCore profile
+            // Row 3: Power telemetry
             float bottomY = barY + dpToPx(24);
             paintTextSecondary.setTextSize(spToPx(11.5f));
             paintTextSecondary.setTextAlign(Paint.Align.LEFT);
@@ -1889,7 +1869,7 @@ public class HyperRingOverlay {
 
             paintTextTertiary.setTextSize(spToPx(11f));
             paintTextTertiary.setTextAlign(Paint.Align.RIGHT);
-            String rightSub = (!batteryTempStr.isEmpty() ? batteryTempStr + " · " : "") + hyperCoreProfile;
+            String rightSub = !batteryTempStr.isEmpty() ? batteryTempStr : "";
             canvas.drawText(rightSub, curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (renderType == STATE_MEDIA) {
@@ -2180,35 +2160,6 @@ public class HyperRingOverlay {
             paintTextSecondary.setTextSize(spToPx(12f));
             paintTextSecondary.setTextAlign(Paint.Align.LEFT);
             canvas.drawText("Rear LED illuminated · Tap to toggle", dpToPx(20), descY, paintTextSecondary);
-
-        } else if (renderType == STATE_HYPERDL) {
-            float topY = baseTopY;
-
-            paintAccentCyan.setAlpha(intAlpha);
-            drawDownloadIcon(canvas, dpToPx(24), topY, dpToPx(12), paintAccentCyan);
-
-            paintTextPrimary.setTextSize(spToPx(13.5f));
-            paintTextPrimary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText("HyperDL Engine", dpToPx(44), topY + dpToPx(5), paintTextPrimary);
-
-            paintTextPrimary.setTextAlign(Paint.Align.RIGHT);
-            paintTextPrimary.setColor(Color.parseColor("#38BDF8"));
-            canvas.drawText(hyperDLSpeed, curW - dpToPx(20), topY + dpToPx(5), paintTextPrimary);
-            paintTextPrimary.setColor(Color.WHITE);
-
-            float fileY = topY + dpToPx(22);
-            paintTextSecondary.setTextSize(spToPx(11.5f));
-            paintTextSecondary.setTextAlign(Paint.Align.LEFT);
-            canvas.drawText(truncate(hyperDLFile, 30), dpToPx(20), fileY, paintTextSecondary);
-
-            float barY = fileY + dpToPx(16);
-            float barW = curW - dpToPx(40);
-            paintTrack.setAlpha(Math.min(255, (int) (alpha * 40)));
-            canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + barW, barY + dpToPx(4)), dpToPx(2), dpToPx(2), paintTrack);
-
-            paintAccentCyan.setAlpha(intAlpha);
-            float fillRatio = Math.max(0.04f, Math.min(1.0f, hyperDLProgress / 100f));
-            canvas.drawRoundRect(new RectF(dpToPx(20), barY, dpToPx(20) + (barW * fillRatio), barY + dpToPx(4)), dpToPx(2), dpToPx(2), paintAccentCyan);
         }
     }
 
@@ -2309,22 +2260,6 @@ public class HyperRingOverlay {
         p.lineTo(cx - size * 0.2f, cy - size * 0.1f);
         p.close();
         canvas.drawPath(p, paint);
-    }
-
-    private static void drawDownloadIcon(Canvas canvas, float cx, float cy, float size, Paint paint) {
-        Path p = new Path();
-        p.moveTo(cx, cy + size * 0.35f);
-        p.lineTo(cx - size * 0.32f, cy + size * 0.03f);
-        p.lineTo(cx - size * 0.12f, cy + size * 0.03f);
-        p.lineTo(cx - size * 0.12f, cy - size * 0.45f);
-        p.lineTo(cx + size * 0.12f, cy - size * 0.45f);
-        p.lineTo(cx + size * 0.12f, cy + size * 0.03f);
-        p.lineTo(cx + size * 0.32f, cy + size * 0.03f);
-        p.close();
-        canvas.drawPath(p, paint);
-
-        tempRectF.set(cx - size * 0.38f, cy + size * 0.42f, cx + size * 0.38f, cy + size * 0.52f);
-        canvas.drawRoundRect(tempRectF, dpToPx(1), dpToPx(1), paint);
     }
 
     private static void drawMusicNoteIcon(Canvas canvas, float cx, float cy, float size, Paint paint) {
@@ -2689,8 +2624,6 @@ public class HyperRingOverlay {
                 wakeEngineLoop();
             } else if (enableMedia && !userDismissedMedia && (isMediaPlaying || (mediaTitle != null && !mediaTitle.isEmpty()))) {
                 showIsland(STATE_MEDIA, 0);
-            } else if (isHyperDLActive && enableHyperDL) {
-                showIsland(STATE_HYPERDL, 0);
             }
         }
     };
@@ -2738,19 +2671,7 @@ public class HyperRingOverlay {
                         handler.postDelayed(this, expandTimeoutMs);
                     }
                 } else if (isTransient) {
-                    if (isHyperDLActive && enableHyperDL) {
-                        currentIsland = STATE_HYPERDL;
-                        activeIslandType = STATE_HYPERDL;
-                        if (crossfadeSpring != null) {
-                            crossfadeSpring.snapTo(0.0f);
-                            crossfadeSpring.setParameters(480f, 0.92f);
-                            crossfadeSpring.setTarget(1.0f);
-                        }
-                        if (morphSpring != null) morphSpring.snapTo(0.0f);
-                        prepareWindowForTarget();
-                        wakeEngineLoop();
-                        persistStatusAsync();
-                    } else if (isMediaPlaying && enableMedia && !userDismissedMedia) {
+                    if (isMediaPlaying && enableMedia && !userDismissedMedia) {
                         currentIsland = STATE_MEDIA;
                         activeIslandType = STATE_MEDIA;
                         if (crossfadeSpring != null) {
@@ -2766,7 +2687,7 @@ public class HyperRingOverlay {
                         startCollapse();
                     }
                 } else {
-                    if (currentIsland != STATE_MEDIA && currentIsland != STATE_HYPERDL) {
+                    if (currentIsland != STATE_MEDIA) {
                         startCollapse();
                     }
                 }
@@ -2826,7 +2747,7 @@ public class HyperRingOverlay {
                 isCollapsing = false;
 
                 // Priority stack — lower priority states may not hijack a higher priority active state.
-                // P0=CALIBRATION, P1=CHARGING, P2=VOLUME/RINGER, P3=NOTIFICATION, P4=TORCH, P5=HYPERDL, P6=MEDIA
+                // P0=CALIBRATION, P1=CHARGING, P2=VOLUME/RINGER, P3=NOTIFICATION, P4=TORCH, P5=MEDIA
                 if (state != STATE_CALIBRATION && currentIsland != STATE_IDLE && !isCollapsing) {
                     int incomingPri = statePriority(state);
                     int activePri   = statePriority(currentIsland);
@@ -2931,8 +2852,7 @@ public class HyperRingOverlay {
             case STATE_RINGER:      return 2;
             case STATE_NOTIFICATION: return 3;
             case STATE_TORCH:       return 4;
-            case STATE_HYPERDL:     return 5;
-            case STATE_MEDIA:       return 6;
+            case STATE_MEDIA:       return 5;
             default:                return 99;
         }
     }
@@ -2955,20 +2875,7 @@ public class HyperRingOverlay {
                         || currentIsland == STATE_TORCH);
 
                 if (!isExpanded && isTransient) {
-                    if (isHyperDLActive && enableHyperDL) {
-                        currentIsland = STATE_HYPERDL;
-                        activeIslandType = STATE_HYPERDL;
-                        if (crossfadeSpring != null) {
-                            crossfadeSpring.snapTo(0.0f);
-                            crossfadeSpring.setParameters(480f, 0.92f);
-                            crossfadeSpring.setTarget(1.0f);
-                        }
-                        if (morphSpring != null) morphSpring.snapTo(0.0f);
-                        prepareWindowForTarget();
-                        wakeEngineLoop();
-                        persistStatusAsync();
-                        return;
-                    } else if (isMediaPlaying && enableMedia && !userDismissedMedia) {
+                    if (isMediaPlaying && enableMedia && !userDismissedMedia) {
                         // Smoothly morph cross-fade back to active media pill instead of collapsing into hole and reopening
                         currentIsland = STATE_MEDIA;
                         activeIslandType = STATE_MEDIA;
@@ -3162,7 +3069,6 @@ public class HyperRingOverlay {
             case STATE_RINGER:       return dpToPx(124);
             case STATE_NOTIFICATION: return dpToPx(124);
             case STATE_TORCH:        return dpToPx(124);
-            case STATE_HYPERDL:      return dpToPx(124);
             default:                 return dpToPx(124);
         }
     }
@@ -3447,13 +3353,6 @@ public class HyperRingOverlay {
                     if (enableRinger) {
                         queryRingerFallback();
                     }
-                    if (enableHyperDL) {
-                        queryHyperDLStatusNative();
-                    }
-                    if (enableHyperCore && isCharging) {
-                        readHyperCoreStatusNative();
-                    }
-
                     // Landscape guard check
                     if (hideInLandscape && currentIsland != STATE_CALIBRATION) {
                         boolean land = isLandscape();
@@ -3489,10 +3388,6 @@ public class HyperRingOverlay {
                     } else if (currentIsland == STATE_VOLUME || currentIsland == STATE_RINGER 
                             || currentIsland == STATE_TORCH || currentIsland == STATE_NOTIFICATION) {
                         // Transient states wait for their timeouts
-                    } else if (isHyperDLActive && enableHyperDL) {
-                        if (currentIsland != STATE_HYPERDL && currentIsland != STATE_CALIBRATION) {
-                            showIsland(STATE_HYPERDL, 0);
-                        }
                     } else if (enableMedia && !userDismissedMedia && (isMediaPlaying || currentIsland == STATE_MEDIA)) {
                         if (isMediaPlaying) {
                             if ((currentIsland != STATE_MEDIA && currentIsland != STATE_CALIBRATION)
@@ -4393,36 +4288,6 @@ public class HyperRingOverlay {
     }
 
 
-    private static void queryHyperDLStatusNative() {
-        File f = new File("/data/local/tmp/hyperdl_status.json");
-        if (!f.exists()) {
-            if (isHyperDLActive) {
-                isHyperDLActive = false;
-                wakeEngineLoop();
-            }
-            return;
-        }
-
-        try (BufferedReader br = new BufferedReader(new FileReader(f))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = br.readLine()) != null) sb.append(line);
-            String json = sb.toString();
-
-            String status = getJsonRawVal(json, "status");
-            if ("downloading".equalsIgnoreCase(status) || "active".equalsIgnoreCase(status)) {
-                isHyperDLActive = true;
-                hyperDLSpeed = parseStr(json, "speed", "8.4 MB/s");
-                hyperDLProgress = parseInt(json, "progress", 50);
-                hyperDLFile = parseStr(json, "title", "Download");
-            } else {
-                isHyperDLActive = false;
-            }
-        } catch (Throwable ignored) {
-            isHyperDLActive = false;
-        }
-    }
-
     private static void readBatteryHardwareTelemetry() {
         try {
             long cap = readLongFromFile("/sys/class/power_supply/battery/capacity");
@@ -4465,23 +4330,6 @@ public class HyperRingOverlay {
         return 0L;
     }
 
-    private static void readHyperCoreStatusNative() {
-        File f = new File("/dev/hypercore_status.json");
-        if (!f.exists()) f = new File("/data/adb/modules/hypercore/status.json");
-        if (!f.exists()) return;
-
-        try (BufferedReader br = new BufferedReader(new FileReader(f))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = br.readLine()) != null) sb.append(line);
-            String json = sb.toString();
-
-            hyperCoreProfile = parseStr(json, "profile", hyperCoreProfile);
-            chargeWattStr = parseStr(json, "watt", chargeWattStr);
-            chargeCurrentStr = parseStr(json, "current", chargeCurrentStr);
-        } catch (Throwable ignored) {}
-    }
-
     private static void persistStatusAsync() {
         if (backgroundHandler != null) {
             backgroundHandler.post(new Runnable() {
@@ -4495,7 +4343,6 @@ public class HyperRingOverlay {
                         else if (currentIsland == STATE_RINGER) stateName = "ringer";
                         else if (currentIsland == STATE_NOTIFICATION) stateName = "notification";
                         else if (currentIsland == STATE_TORCH) stateName = "torch";
-                        else if (currentIsland == STATE_HYPERDL) stateName = "hyperdl";
                         else if (currentIsland == STATE_CALIBRATION) stateName = "calibration";
 
                         StringBuilder sb = new StringBuilder();
@@ -4512,10 +4359,6 @@ public class HyperRingOverlay {
                         sb.append("  \"ringer_label\": \"").append(ringerLabel).append("\",\n");
                         sb.append("  \"torch_active\": ").append(isTorchActive).append(",\n");
                         sb.append("  \"charge_watt\": \"").append(chargeWattStr).append("\",\n");
-                        sb.append("  \"hypercore_profile\": \"").append(hyperCoreProfile).append("\",\n");
-                        sb.append("  \"hyperdl_active\": ").append(isHyperDLActive).append(",\n");
-                        sb.append("  \"hyperdl_speed\": \"").append(hyperDLSpeed).append("\",\n");
-                        sb.append("  \"hyperdl_progress\": ").append(hyperDLProgress).append(",\n");
                         sb.append("  \"preview_lock\": ").append(previewLock).append("\n");
                         sb.append("}\n");
 
@@ -4593,11 +4436,6 @@ public class HyperRingOverlay {
                     } else {
                         showIsland(STATE_TORCH, 2600);
                     }
-                } else if (cmd.startsWith("hyperdl") || cmd.startsWith("download")) {
-                    isHyperDLActive = true;
-                    hyperDLSpeed = "12.4 MB/s";
-                    hyperDLProgress = 68;
-                    showIsland(STATE_HYPERDL, 0);
                 } else if (cmd.startsWith("preview:pill") || cmd.startsWith("preview:compact") || "preview-pill".equalsIgnoreCase(cmd)) {
                     previewLock = true;
                     showIsland(STATE_CHARGING, 0);
@@ -4681,8 +4519,6 @@ public class HyperRingOverlay {
             enableNotifications = parseBool(json, "enable_notifications", enableNotifications);
             enableTorch         = parseBool(json, "enable_torch", enableTorch);
             enableHaptics       = parseBool(json, "enable_haptics", enableHaptics);
-            enableHyperDL       = parseBool(json, "enable_hyperdl", enableHyperDL);
-            enableHyperCore     = parseBool(json, "enable_hypercore", enableHyperCore);
             stealthRingIdle     = parseBool(json, "stealth_ring_idle", stealthRingIdle);
             hideInLandscape     = parseBool(json, "hide_in_landscape", hideInLandscape);
             springStiffness     = parseFloat(json, "spring_stiffness", springStiffness);
