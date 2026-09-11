@@ -50,6 +50,7 @@ if [ ! -f "$MODPATH/state/config.json" ]; then
   "enable_ringer": true,
   "enable_notifications": true,
   "enable_torch": true,
+  "enable_progress": true,
   "enable_haptics": true,
   "stealth_ring_idle": false,
   "hide_in_landscape": true,
@@ -58,6 +59,7 @@ if [ ! -f "$MODPATH/state/config.json" ]; then
   "auto_expand_charging": true,
   "auto_expand_media": false,
   "auto_expand_notification": false,
+  "auto_expand_progress": false,
   "expand_timeout_ms": 3500
 }
 C_EOF

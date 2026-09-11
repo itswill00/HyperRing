@@ -74,6 +74,7 @@ Settings live in `state/config.json` and update dynamically without restarting t
   "enable_ringer": true,
   "enable_notifications": true,
   "enable_torch": true,
+  "enable_progress": true,
   "stealth_ring_idle": false,
   "hide_in_landscape": true,
   "spring_stiffness": 380.0,
@@ -81,6 +82,7 @@ Settings live in `state/config.json` and update dynamically without restarting t
   "auto_expand_charging": true,
   "auto_expand_media": false,
   "auto_expand_notification": false,
+  "auto_expand_progress": false,
   "expand_timeout_ms": 3500
 }
 ```
