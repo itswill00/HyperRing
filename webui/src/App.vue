@@ -136,8 +136,24 @@
         <div class="section-title">Visual simulator</div>
         <div class="sim-bezel-box">
           <div class="sim-screen-boundary">
+            <!-- Simulated Card (when previewMode is card) -->
+            <div
+              v-if="previewMode === 'card'"
+              class="sim-card"
+              :style="{
+                left: simPillLeft + '%',
+                top: (simCutoutTop + Math.round(simCardHeight / 2) + 2) + 'px',
+                width: simCardWidth + 'px',
+                height: simCardHeight + 'px',
+                borderRadius: simCardRadius + 'px'
+              }"
+            >
+              <span style="font-size: 8px; color: #fff; opacity: 0.9; font-weight: 600;">{{ liveState.media_title || 'Now Playing' }}</span>
+              <span style="font-size: 7px; color: #9ea3b2;">{{ liveState.media_artist || 'Expanded Card' }}</span>
+            </div>
             <!-- Simulated Pill -->
             <div
+              v-else
               class="sim-pill"
               :style="{
                 left: simPillLeft + '%',
@@ -912,6 +928,23 @@
             </label>
           </div>
 
+          <!-- Auto-expand notification -->
+          <div class="md3-list-row" @click="toggleConfig('auto_expand_notification')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="lens" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Expand on notification</div>
+                <div class="row-sub">Briefly show banner details on new alert</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.auto_expand_notification" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
           <!-- Stealth Ring in Idle -->
           <div class="md3-list-row" @click="toggleConfig('stealth_ring_idle')">
             <div class="row-left">
@@ -1036,6 +1069,37 @@
 
       <!-- TAB 5: TOOLS & DIAGNOSTICS -->
       <div v-else-if="currentTab === 'tools'">
+        <!-- Live Island Telemetry Status -->
+        <div class="section-title">Island live telemetry</div>
+        <section class="md3-card">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 11px;">
+            <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
+              <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">Active Island</div>
+              <div style="color: var(--on-surface); font-weight: 600; text-transform: capitalize;">
+                {{ liveState.active_island || 'Idle' }}
+              </div>
+            </div>
+            <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
+              <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">Battery / Power</div>
+              <div style="color: var(--on-surface); font-weight: 600;">
+                {{ liveState.battery_pct }}% {{ liveState.battery_charging ? '⚡ Charging' : '• Battery' }}
+              </div>
+            </div>
+            <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
+              <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">Now Playing</div>
+              <div style="color: var(--on-surface); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                {{ liveState.media_playing ? (liveState.media_title || 'Media active') : 'Inactive' }}
+              </div>
+            </div>
+            <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
+              <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">HyperCore / HyperDL</div>
+              <div style="color: var(--on-surface); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                {{ liveState.hyperdl_active ? `DL: ${liveState.hyperdl_speed}` : (liveState.hypercore_profile || 'Default') }}
+              </div>
+            </div>
+          </div>
+        </section>
+
         <div class="section-title">Live event triggers</div>
         <section class="md3-card">
           <div class="action-chips-grid">
@@ -1103,6 +1167,14 @@
             </div>
             <pre class="terminal-body">{{ logContent || 'No log entries recorded.' }}</pre>
           </div>
+        </section>
+
+        <div class="section-title">Configuration profile</div>
+        <section class="md3-card">
+          <button type="button" class="action-btn-secondary" style="margin-top: 0;" @click="resetDefaults">
+            <Icons name="refresh" :size="15" />
+            <span>Reset to factory defaults</span>
+          </button>
         </section>
       </div>
 
@@ -1261,6 +1333,24 @@ const simPillHeight = computed(() => {
     return Math.max(18, Math.min(30, Math.round(config.pill_height * 0.6)))
   }
   return Math.max(20, Math.round(config.cutout_radius * 0.55))
+})
+
+const simCardWidth = computed(() => {
+  if (config.card_width > 0) {
+    return Math.max(120, Math.min(200, Math.round(config.card_width * 0.52)))
+  }
+  return 160
+})
+
+const simCardHeight = computed(() => {
+  if (config.card_height > 0) {
+    return Math.max(36, Math.min(52, Math.round(config.card_height * 0.28)))
+  }
+  return 44
+})
+
+const simCardRadius = computed(() => {
+  return Math.round((config.card_radius || 24) * 0.35)
 })
 
 // Dual-Bridge Shell Runner (Supports KernelSU and APatch/MMRL/Magisk WebRoot)
@@ -1442,18 +1532,21 @@ function applyPreset(type) {
     config.cutout_radius = 28
     config.x_offset = 0
     config.y_offset = 0
+    config.pill_alignment = 'center'
   } else if (type === 'left') {
     config.cutout_x = 120
     config.cutout_y = 55
     config.cutout_radius = 28
     config.x_offset = 0
     config.y_offset = 0
+    config.pill_alignment = 'left'
   } else if (type === 'right') {
     config.cutout_x = 960
     config.cutout_y = 55
     config.cutout_radius = 28
     config.x_offset = 0
     config.y_offset = 0
+    config.pill_alignment = 'right'
   }
   saveConfig()
   showToast(`Applied ${type} preset`)
@@ -1462,20 +1555,82 @@ function applyPreset(type) {
 async function autoDetectCutout() {
   currentPreset.value = 'auto'
   try {
-    const wmOut = await execShell('dumpsys window | grep -i "status_bar" | head -n 10 2>/dev/null')
-    let sbHeight = 110
-    if (wmOut && wmOut.includes('fillx')) {
-      const match = wmOut.match(/fillx(\d+)/)
-      if (match) sbHeight = parseInt(match[1])
+    const dispOut = await execShell('dumpsys display | grep -iE "DisplayCutout|boundingRect|mCustomCutout" | head -n 5 2>/dev/null')
+    let foundCutout = false
+    if (dispOut) {
+      const rectMatch = dispOut.match(/Rect\s*\(\s*(\d+)\s*,\s*(\d+)\s*-\s*(\d+)\s*,\s*(\d+)\s*\)/)
+      if (rectMatch) {
+        const left = parseInt(rectMatch[1])
+        const top = parseInt(rectMatch[2])
+        const right = parseInt(rectMatch[3])
+        const bottom = parseInt(rectMatch[4])
+        config.cutout_x = Math.round((left + right) / 2)
+        config.cutout_y = Math.round((top + bottom) / 2)
+        config.cutout_radius = Math.max(20, Math.round((right - left) / 2))
+        foundCutout = true
+      }
     }
-    config.cutout_x = 540
-    config.cutout_y = Math.round(sbHeight / 2)
-    config.cutout_radius = 28
+    if (!foundCutout) {
+      const wmSize = await execShell('wm size 2>/dev/null')
+      let w = 1080
+      if (wmSize) {
+        const sizeMatch = wmSize.match(/(\d+)\s*x\s*(\d+)/)
+        if (sizeMatch) w = parseInt(sizeMatch[1])
+      }
+      config.cutout_x = Math.round(w / 2)
+      config.cutout_y = 55
+      config.cutout_radius = 28
+    }
     saveConfig()
-    showToast(`Detected status bar height: ${sbHeight}px`)
+    showToast(`Detected cutout: X=${config.cutout_x}, Y=${config.cutout_y}`)
   } catch (e) {
     showToast('Auto detection default applied')
   }
+}
+
+function resetDefaults() {
+  Object.assign(config, {
+    enabled: true,
+    cutout_x: 540,
+    cutout_y: 55,
+    cutout_radius: 28,
+    pill_alignment: 'center',
+    notch_mode: false,
+    x_offset: 0,
+    y_offset: 0,
+    pill_width: 0,
+    pill_height: 0,
+    card_width: 0,
+    card_height: 0,
+    card_radius: 24,
+    card_y_offset: 0,
+    card_position_mode: 'below',
+    enable_media: true,
+    media_show_pill_art: true,
+    media_art_style: 'rounded',
+    media_show_waveform: true,
+    media_pulse_color: 'auto',
+    media_ambient_glow: true,
+    media_glow_opacity: 25,
+    media_marquee: true,
+    enable_charging: true,
+    enable_volume: true,
+    enable_ringer: true,
+    enable_notifications: true,
+    enable_torch: true,
+    enable_hyperdl: true,
+    enable_hypercore: true,
+    stealth_ring_idle: false,
+    hide_in_landscape: true,
+    spring_stiffness: 340.0,
+    spring_damping: 0.84,
+    auto_expand_charging: true,
+    auto_expand_media: false,
+    auto_expand_notification: false,
+    expand_timeout_ms: 3500
+  })
+  saveConfig()
+  showToast('Configuration reset to defaults')
 }
 
 function applyMotionPreset(profile) {

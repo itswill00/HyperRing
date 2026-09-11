@@ -18,6 +18,7 @@
   "media_show_pill_art": true,
   "media_art_style": "rounded",
   "media_show_waveform": true,
+  "media_pulse_color": "auto",
   "media_ambient_glow": true,
   "media_glow_opacity": 25,
   "media_marquee": true,

@@ -121,8 +121,8 @@ public class HyperRingOverlay {
     private static boolean enableHyperCore     = true;
     private static boolean stealthRingIdle     = false;
     private static boolean hideInLandscape     = true;
-    private static float springStiffness       = 380.0f;
-    private static float springDamping         = 0.78f;
+    private static float springStiffness       = 340.0f;
+    private static float springDamping         = 0.84f;
     private static boolean autoExpandCharging  = true;
     private static int lastDisplayRotation     = -1;
     private static int lastDisplayW            = -1;
@@ -674,8 +674,23 @@ public class HyperRingOverlay {
                     volumePercent = Math.round((val / (float) Math.max(1, max)) * 100f);
                     lastVolumeLevel = val;
                     previewLock = false;
+                    // Fix 1: If a card is currently expanded, let it collapse organically via
+                    // collapseCard() (which reverses morphSpring without a hard-snap) rather
+                    // than snapping dimensions to 0 in a single frame before the volume island
+                    // animates in.  The morph flight guard in prepareWindowForTarget keeps the
+                    // window canvas at card size until the spring settles.
+                    if (isExpanded) {
+                        collapseCard();
+                    }
                     if (currentIsland != STATE_CALIBRATION) {
                         showIsland(STATE_VOLUME, 1800);
+                        // Fix 2: Always re-post autoCollapseRunnable with an authoritative
+                        // timeout so that rapid volume presses do not leave the timer cancelled
+                        // without a re-schedule, keeping the island stuck in STATE_VOLUME.
+                        if (handler != null) {
+                            handler.removeCallbacks(autoCollapseRunnable);
+                            handler.postDelayed(autoCollapseRunnable, 1800);
+                        }
                     }
                 }
             }, volFilter);
@@ -807,7 +822,6 @@ public class HyperRingOverlay {
 
     private static void checkDisplayRebind() {
         if (handler == null) return;
-        // Bug 3: Always execute on main looper immediately — no async wrapper
         if (Looper.myLooper() != Looper.getMainLooper()) {
             handler.post(new Runnable() {
                 @Override public void run() { checkDisplayRebind(); }
@@ -815,11 +829,14 @@ public class HyperRingOverlay {
             return;
         }
         try {
+            // Fix 3: Always re-acquire Display.DEFAULT_DISPLAY from DisplayManager so we are
+            // never bound to a dead VirtualDisplay surface left over from screen recording.
             DisplayManager dm = (DisplayManager) sysContext.getSystemService(Context.DISPLAY_SERVICE);
             if (dm != null) {
                 Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
                 if (d != null) {
                     defaultDisplay = d;
+                    // Create a fresh display context isolated from any VirtualDisplay context.
                     Context dCtx = sysContext.createDisplayContext(defaultDisplay);
                     if (dCtx != null) context = dCtx;
                     WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
@@ -831,38 +848,96 @@ public class HyperRingOverlay {
             if (ringView != null && windowManager != null) {
                 boolean attached = ringView.isAttachedToWindow() && ringView.getWindowToken() != null;
                 if (!attached) {
-                    // Only attempt removal + re-add if actually detached
-                    try { windowManager.removeViewImmediate(ringView); } catch (Throwable ignored) {}
-                    boolean readded = false;
-                    try {
-                        if (ringView.getParent() == null && params != null) {
-                            // Bug 3: Always set FLAG_HARDWARE_ACCELERATED before re-add
-                            params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
-                            params.windowAnimations = 0;
+                    // Delay 120ms to let WMS flush the VirtualDisplay surface before addView.
+                    handler.postDelayed(new Runnable() {
+                        @Override public void run() {
                             try {
-                                java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
-                                int curPf = pf.getInt(params);
-                                pf.setInt(params, curPf | 0x00000040);
-                            } catch (Throwable ignored2) {}
-                            windowManager.addView(ringView, params);
-                            readded = true;
+                                try { windowManager.removeViewImmediate(ringView); } catch (Throwable ignored) {}
+                                boolean readded = false;
+                                if (ringView.getParent() == null && params != null) {
+                                    params.type = 2017;
+                                    params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+                                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
+                                    params.windowAnimations = 0;
+                                    // Fix 3: Null the token to discard any stale VirtualDisplay
+                                    // surface session token that causes BadTokenException when the
+                                    // screen recorder starts or stops.
+                                    params.token = null;
+                                    try {
+                                        java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
+                                        int curPf = pf.getInt(params);
+                                        pf.setInt(params, curPf | 0x00000040);
+                                    } catch (Throwable ignored2) {}
+                                    try {
+                                        windowManager.addView(ringView, params);
+                                        readded = true;
+                                    } catch (android.view.WindowManager.BadTokenException | IllegalStateException e) {
+                                        // Fix 3: Stale token / surface gone — retry after 350ms.
+                                        params.token = null;
+                                        handler.postDelayed(new Runnable() {
+                                            @Override public void run() { checkDisplayRebind(); }
+                                        }, 350);
+                                        return;
+                                    } catch (Throwable e) {
+                                        // Fallback to TYPE_APPLICATION_OVERLAY (2038)
+                                        params.type = 2038;
+                                        params.token = null;
+                                        try {
+                                            windowManager.addView(ringView, params);
+                                            readded = true;
+                                        } catch (android.view.WindowManager.BadTokenException | IllegalStateException e2) {
+                                            params.token = null;
+                                            handler.postDelayed(new Runnable() {
+                                                @Override public void run() { checkDisplayRebind(); }
+                                            }, 350);
+                                            return;
+                                        } catch (Throwable ignored3) {}
+                                    }
+                                }
+                                if (!readded) {
+                                    attachWindow();
+                                    return;
+                                }
+                                if (ringView != null && currentIsland != STATE_IDLE) {
+                                    if (ringView.getVisibility() != View.VISIBLE) {
+                                        ringView.setVisibility(View.VISIBLE);
+                                    }
+                                    prepareWindowForTarget();
+                                    ringView.requestLayout();
+                                    ringView.invalidate();
+                                }
+                                wakeEngineLoop();
+                                if (isMediaPlaying && currentIsland == STATE_IDLE && masterEnabled) {
+                                    showIsland(STATE_MEDIA, 0);
+                                }
+                            } catch (Throwable ignored) {}
                         }
-                    } catch (Throwable ignored) {}
-                    if (!readded) {
-                        attachWindow();
-                        return;
-                    }
+                    }, 120);
+                    return;
                 } else if (params != null) {
-                    // Bug 3: ringView.isAttachedToWindow() == true — do NOT detach, just update params in-place
-                    params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+                    // ringView is attached — update params in-place, no detach needed.
+                    params.type = 2017;
+                    params.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
                     params.windowAnimations = 0;
+                    // Fix 3: null token prevents any lingering VirtualDisplay session from
+                    // being used for the updateViewLayout call.
+                    params.token = null;
                     try {
                         java.lang.reflect.Field pf = WindowManager.LayoutParams.class.getField("privateFlags");
                         int curPf = pf.getInt(params);
                         pf.setInt(params, curPf | 0x00000040);
                     } catch (Throwable ignored2) {}
-                    // Bug 3: Immediate layout update on main looper — no postDelayed
-                    try { windowManager.updateViewLayout(ringView, params); } catch (Throwable ignored) {}
+                    try {
+                        windowManager.updateViewLayout(ringView, params);
+                    } catch (android.view.WindowManager.BadTokenException | IllegalStateException e) {
+                        // Fix 3: Token gone mid-flight (screen record stop) — full rebind after 350ms.
+                        params.token = null;
+                        handler.postDelayed(new Runnable() {
+                            @Override public void run() { checkDisplayRebind(); }
+                        }, 350);
+                        return;
+                    } catch (Throwable ignored) {}
                 }
             } else if (ringView == null) {
                 attachWindow();
@@ -899,7 +974,6 @@ public class HyperRingOverlay {
                 ringView.invalidate();
             }
             wakeEngineLoop();
-            // State recovery: if media was playing before screen recorder event, restore island
             if (isMediaPlaying && currentIsland == STATE_IDLE && masterEnabled) {
                 showIsland(STATE_MEDIA, 0);
             }
@@ -936,6 +1010,9 @@ public class HyperRingOverlay {
                             @Override
                             public void run() {
                                 readConfig();
+                                // Live WebUI config update: immediately resize/reposition window
+                                // so customPillWidth/Height and alignment changes apply without restart.
+                                prepareWindowForTarget();
                                 wakeEngineLoop();
                             }
                         });
@@ -1252,16 +1329,26 @@ public class HyperRingOverlay {
         if (handler != null) {
             handler.removeCallbacks(autoCollapseRunnable);
         }
-        // Unified single-phase morphing physics: fluid organic collapse curve (~240ms duration, stiffness ~340, damping ~0.88)
+        // Fix 1: Do NOT snap morphSpring or springContentAlpha when aborting expansion.
+        // If morphSpring is mid-flight (current > 0.0005f), let it reverse organically from
+        // its current position rather than jumping to 0.  Window bounds stay at card size
+        // (isExpanded||isMorphFlight branch in prepareWindowForTarget) until the spring
+        // fully settles, preventing the 1-frame hard-clip artefact.
         if (morphSpring != null) {
             morphSpring.setParameters(340f, 0.88f);
             morphSpring.setTarget(0.0f);
+            // Only call prepareWindowForTarget immediately if the spring is already at rest
+            // (e.g. tap-to-close on a fully-open card); if mid-flight the vsync loop will
+            // call prepareWindowForTarget once morphSpring.isAtEquilibrium() && current <= 0.0005f.
         }
         if (springContentAlpha != null) {
             springContentAlpha.setParameters(340f, 0.88f);
             springContentAlpha.setTarget(0.0f);
         }
         resolveTargetState(SystemClock.uptimeMillis());
+        // Intentionally do NOT call prepareWindowForTarget() here — window bounds are kept
+        // at card dimensions by the isMorphFlight guard in prepareWindowForTarget().
+        // The vsync loop's post-equilibrium check (line ~2435) will call it once settled.
         wakeEngineLoop();
     }
 
@@ -1274,25 +1361,26 @@ public class HyperRingOverlay {
             float viewW = springW.current;
 
             if (currentIsland == STATE_MEDIA) {
-                float artSize = dpToPx(48); // Bug 2: matches renderExpandedContent
-                float artTop = dpToPx(20);  // Bug 2: fixed top padding
+                float artSize = dpToPx(48);
+                float artTop = dpToPx(20);
 
-                // Row 1: Cast / Route icon glyph on top-right
-                float castBtnX = viewW - dpToPx(26);
+                // Row 1: Cast / Route icon — flush to right margin at curW - 24dp
+                float castBtnX = viewW - dpToPx(24);
                 float castBtnY = artTop + artSize * 0.40f;
                 if (Math.abs(x - castBtnX) < dpToPx(22) && Math.abs(y - castBtnY) < dpToPx(22)) {
                     triggerMediaOutputRoute();
                     return;
                 }
 
-                // Row 2: 5 buttons [Repeat/Shuffle] — [Prev] — [Play/Pause] — [Next] — [Favorite/Heart]
-                float btnY = artTop + artSize + dpToPx(22); // Bug 2: matches renderExpandedContent
+                // Row 2: 5-button symmetrical at 52dp spacing
+                // [Repeat/Shuffle (cx-104)] [Prev (cx-52)] [Play/Pause (cx)] [Next (cx+52)] [Heart (cx+104)]
+                float btnY = artTop + artSize + dpToPx(24);
                 float centerX = viewW / 2.0f;
-                float b1X = centerX - dpToPx(96);
-                float b2X = centerX - dpToPx(48);
+                float b1X = centerX - dpToPx(104);
+                float b2X = centerX - dpToPx(52);
                 float b3X = centerX;
-                float b4X = centerX + dpToPx(48);
-                float b5X = centerX + dpToPx(96);
+                float b4X = centerX + dpToPx(52);
+                float b5X = centerX + dpToPx(104);
                 float btnHitRadius = dpToPx(22);
 
                 if (Math.abs(y - btnY) < btnHitRadius) {
@@ -1314,13 +1402,12 @@ public class HyperRingOverlay {
                     }
                 }
 
-                // Row 3: Seekbar anchored to card bottom — barY = curH - 24dp (Bug 2)
+                // Row 3: Seekbar — barY = curH - 24dp (matches 178dp card layout)
                 float curH = springH.current;
                 float barY = curH - dpToPx(24);
                 float barLeft = dpToPx(62);
                 float barW = viewW - dpToPx(124);
 
-                // Interactive Seekbar tap support
                 if (mediaTrackDuration > 0 && Math.abs(y - barY) < dpToPx(14) && x >= barLeft - dpToPx(8) && x <= barLeft + barW + dpToPx(8)) {
                     float fraction = Math.max(0f, Math.min(1f, (x - barLeft) / barW));
                     long seekTarget = (long) (fraction * mediaTrackDuration);
@@ -1393,7 +1480,8 @@ public class HyperRingOverlay {
             canvas.clipPath(tempClipPath);
 
             float compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
-            float targetCardH = getDefaultCardHeight(currentIsland);
+            int cardState = (previousIsland != STATE_IDLE && !isExpanded) ? previousIsland : currentIsland;
+            float targetCardH = (customCardHeight > 0) ? dpToPx(customCardHeight) : getDefaultCardHeight(cardState);
             float progress = Math.max(0.0f, Math.min(1.0f, (h - compactH) / Math.max(1.0f, targetCardH - compactH)));
 
             if (isExpanded) {
@@ -1430,28 +1518,32 @@ public class HyperRingOverlay {
 
     private static void renderCompactContent(Canvas canvas, float curW, float curH, float alpha) {
         float centerY = curH / 2.0f;
-        float holeR = cutoutRadius;
-        float iconCenterX;
-        float textCenterX;
-        Paint.Align textAlign;
 
+        // Strict geometric anchoring — symmetric margins from left and right edges.
+        // Left Wing (Art/Icon): anchor from left margin at dpToPx(12).
+        // Right Wing (Bars/Text): anchor from right margin at dpToPx(12).
+        // Center void [(curW/2 - cutoutRadius) .. (curW/2 + cutoutRadius)] stays pure OLED black.
+        float artSize = dpToPx(22);
+        float artLeft = dpToPx(12);
+        float iconCenterX = artLeft + (artSize / 2.0f);
+
+        // Right wing: equalizer group right-edge flush to right margin
+        float totalWaveW = (4 * dpToPx(2.2f)) + (3 * dpToPx(2.0f));
+        float barsStartX = curW - dpToPx(12) - totalWaveW; // used by STATE_MEDIA waveform directly
+        float textCenterX = curW - dpToPx(12) - totalWaveW / 2.0f; // center of right wing for text states
+
+        // For left/right pill alignment overrides, adjust anchoring to match user pref
+        Paint.Align textAlign = Paint.Align.CENTER;
         if ("left".equalsIgnoreCase(pillAlignment)) {
-            iconCenterX = Math.max(dpToPx(16), holeR * 2.0f + dpToPx(14));
+            iconCenterX = Math.max(dpToPx(16), cutoutRadius * 2.0f + dpToPx(14));
             textCenterX = curW - dpToPx(18);
-            textAlign = Paint.Align.RIGHT;
+            barsStartX  = curW - dpToPx(12) - totalWaveW;
+            textAlign   = Paint.Align.RIGHT;
         } else if ("right".equalsIgnoreCase(pillAlignment)) {
             iconCenterX = dpToPx(18);
-            textCenterX = Math.min(curW - dpToPx(16), curW - holeR * 2.0f - dpToPx(14));
-            textAlign = Paint.Align.RIGHT;
-        } else {
-            // center cutout: symmetric wings around curW / 2.0f
-            float leftWingW = (curW / 2.0f) - holeR;
-            float rightWingStart = (curW / 2.0f) + holeR;
-            float rightWingW = curW - rightWingStart;
-
-            iconCenterX = leftWingW / 2.0f;
-            textCenterX = rightWingStart + (rightWingW / 2.0f);
-            textAlign = Paint.Align.CENTER;
+            textCenterX = Math.min(curW - dpToPx(16), curW - cutoutRadius * 2.0f - dpToPx(14));
+            barsStartX  = textCenterX - totalWaveW / 2.0f;
+            textAlign   = Paint.Align.RIGHT;
         }
 
         int curType = (activeIslandType != STATE_IDLE ? activeIslandType : currentIsland);
@@ -1464,18 +1556,19 @@ public class HyperRingOverlay {
             float inAlpha = alpha * easeT;
 
             if (outAlpha > 0.02f) {
-                drawCompactState(canvas, previousIsland, curW, curH, outAlpha, iconCenterX, textCenterX, centerY, textAlign);
+                drawCompactState(canvas, previousIsland, curW, curH, outAlpha, iconCenterX, textCenterX, centerY, textAlign, barsStartX);
             }
             if (inAlpha > 0.02f) {
-                drawCompactState(canvas, curType, curW, curH, inAlpha, iconCenterX, textCenterX, centerY, textAlign);
+                drawCompactState(canvas, curType, curW, curH, inAlpha, iconCenterX, textCenterX, centerY, textAlign, barsStartX);
             }
         } else {
-            drawCompactState(canvas, curType, curW, curH, alpha, iconCenterX, textCenterX, centerY, textAlign);
+            drawCompactState(canvas, curType, curW, curH, alpha, iconCenterX, textCenterX, centerY, textAlign, barsStartX);
         }
     }
 
     private static void drawCompactState(Canvas canvas, int renderType, float curW, float curH, float alpha,
-                                         float iconCenterX, float textCenterX, float centerY, Paint.Align textAlign) {
+                                         float iconCenterX, float textCenterX, float centerY, Paint.Align textAlign,
+                                         float barsStartX) {
         int intAlpha = Math.min(255, Math.max(0, (int) (alpha * 255)));
         if (intAlpha <= 0) return;
 
@@ -1492,20 +1585,19 @@ public class HyperRingOverlay {
 
         } else if (renderType == STATE_MEDIA) {
             float artThumbSize = dpToPx(22);
+            // artLeft anchored from left margin — iconCenterX = dpToPx(12) + artThumbSize/2
             float artLeft = iconCenterX - artThumbSize / 2.0f;
             float artTop = centerY - artThumbSize / 2.0f;
             artRectF.set(artLeft, artTop, artLeft + artThumbSize, artTop + artThumbSize);
 
-            // Left Wing: Squircle/rounded compact album art thumbnail (22dp)
+            // Left Wing: Squircle album art — 22dp, 4.5dp corner radius, strict left-margin anchor
             if (mediaShowPillArt && currentPillArt != null && !currentPillArt.isRecycled()) {
                 canvas.save();
                 artClipPath.reset();
                 if ("circle".equalsIgnoreCase(mediaArtStyle)) {
                     artClipPath.addCircle(artRectF.centerX(), artRectF.centerY(), artThumbSize / 2.0f, Path.Direction.CW);
-                } else if ("squircle".equalsIgnoreCase(mediaArtStyle)) {
-                    artClipPath.addRoundRect(artRectF, artThumbSize * 0.38f, artThumbSize * 0.38f, Path.Direction.CW);
-                } else { // "rounded" default
-                    artClipPath.addRoundRect(artRectF, dpToPx(5.5f), dpToPx(5.5f), Path.Direction.CW);
+                } else {
+                    artClipPath.addRoundRect(artRectF, dpToPx(4.5f), dpToPx(4.5f), Path.Direction.CW);
                 }
                 canvas.clipPath(artClipPath);
                 paintArtBitmap.setAlpha(intAlpha);
@@ -1514,26 +1606,24 @@ public class HyperRingOverlay {
             } else {
                 canvas.save();
                 artClipPath.reset();
-                artClipPath.addRoundRect(artRectF, dpToPx(5.5f), dpToPx(5.5f), Path.Direction.CW);
+                artClipPath.addRoundRect(artRectF, dpToPx(4.5f), dpToPx(4.5f), Path.Direction.CW);
                 canvas.clipPath(artClipPath);
                 paintOledBlack.setAlpha(intAlpha);
-                canvas.drawRoundRect(artRectF, dpToPx(5.5f), dpToPx(5.5f), paintOledBlack);
+                canvas.drawRoundRect(artRectF, dpToPx(4.5f), dpToPx(4.5f), paintOledBlack);
                 int discColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
                 if ("#FFFFFF".equalsIgnoreCase(mediaPulseColor)) discColor = Color.WHITE;
                 else if ("#A1A1AA".equalsIgnoreCase(mediaPulseColor)) discColor = Color.parseColor("#A1A1AA");
                 paintAccentCyan.setColor(discColor);
                 paintAccentCyan.setAlpha(Math.min(255, (int) (alpha * 60)));
-                canvas.drawRoundRect(artRectF, dpToPx(5.5f), dpToPx(5.5f), paintAccentCyan);
+                canvas.drawRoundRect(artRectF, dpToPx(4.5f), dpToPx(4.5f), paintAccentCyan);
                 paintAccentCyan.setAlpha(intAlpha);
                 drawMusicNoteIcon(canvas, iconCenterX, centerY, dpToPx(11), paintAccentCyan);
                 canvas.restore();
             }
 
-            // Right Wing: Multi-bar animated waveform visualizer
+            // Right Wing: 4-bar live equalizer — barsStartX anchored from right margin
             if (mediaShowWaveform) {
-                boolean isCutoutCenter = !"left".equalsIgnoreCase(pillAlignment) && !"right".equalsIgnoreCase(pillAlignment);
-                float barsStart = isCutoutCenter ? (textCenterX - dpToPx(7.4f)) : (textCenterX - dpToPx(15f));
-                renderAudioBars(canvas, barsStart, centerY, alpha);
+                renderAudioBars(canvas, barsStartX, centerY, alpha);
             } else {
                 paintTextPrimary.setTextSize(spToPx(11f));
                 paintTextPrimary.setTextAlign(textAlign);
@@ -1635,6 +1725,9 @@ public class HyperRingOverlay {
         float baseTopY = isFloatingBelow ? dpToPx(16) : (isCutoutCenter ? Math.max(dpToPx(24), holeRelY + holeR + dpToPx(6)) : dpToPx(20));
 
         int renderType = (activeIslandType != STATE_IDLE ? activeIslandType : currentIsland);
+        if (!isExpanded && previousIsland != STATE_IDLE) {
+            renderType = previousIsland;
+        }
 
         if (renderType == STATE_CHARGING) {
             // Elegant Native Layout: Safely clear of camera punch-hole
@@ -1678,12 +1771,13 @@ public class HyperRingOverlay {
             canvas.drawText(rightSub, curW - dpToPx(20), bottomY, paintTextTertiary);
 
         } else if (renderType == STATE_MEDIA) {
-            float artSize = dpToPx(48); // Bug 2: was 50dp
+            float artSize = dpToPx(48);
             float artLeft = dpToPx(20);
-            float artTop = dpToPx(20); // Bug 2: fixed top padding, no floating-below branch
+            float artTop = dpToPx(20);
             float curR = (springR != null) ? springR.current : dpToPx(24);
 
-            // Atmospheric ambient gradient tinted by dominant album art color diffusing from bottom/center
+            // Atmospheric Ambient Diffusion Mesh: radial gradient from dominant color to deep OLED
+            // slate-black (#161618), center at (curW*0.5, curH*0.85), radius curW*0.9 — no seam clipping.
             int glowColor = (mediaDominantColor != Color.TRANSPARENT) ? mediaDominantColor : Color.parseColor("#38BDF8");
             if ("#FFFFFF".equalsIgnoreCase(mediaPulseColor)) glowColor = Color.WHITE;
             else if ("#A1A1AA".equalsIgnoreCase(mediaPulseColor)) glowColor = Color.parseColor("#A1A1AA");
@@ -1691,18 +1785,18 @@ public class HyperRingOverlay {
             if (mediaAmbientGlow && glowColor != Color.TRANSPARENT) {
                 int glowAlpha = (int) (255 * (mediaGlowOpacity / 100f) * alpha);
                 if (glowAlpha > 0) {
-                    float glowRadius = curW * 0.75f;
-                    float glowCenterX = curW * 0.5f;
-                    float glowCenterY = curH * 0.95f;
-                    if (cachedGlowGradient == null || cachedGlowColor != glowColor || Math.abs(cachedGlowW - curW) > 1f) {
+                    float meshRadius = curW * 0.9f;
+                    float meshCX = curW * 0.5f;
+                    float meshCY = curH * 0.85f;
+                    if (cachedGlowGradient == null || cachedGlowColor != glowColor
+                            || Math.abs(cachedGlowW - curW) > 1f) {
                         cachedGlowColor = glowColor;
                         cachedGlowW = curW;
+                        // Blend dominant color -> OLED slate #161618 so edges never clip
                         cachedGlowGradient = new RadialGradient(
-                            glowCenterX,
-                            glowCenterY,
-                            glowRadius,
-                            glowColor,
-                            Color.TRANSPARENT,
+                            meshCX, meshCY, meshRadius,
+                            new int[]{glowColor, Color.parseColor("#161618")},
+                            new float[]{0.0f, 1.0f},
                             Shader.TileMode.CLAMP
                         );
                     }
@@ -1714,7 +1808,7 @@ public class HyperRingOverlay {
                 }
             }
 
-            // Row 1 (Metadata): Squircle Album Art (48-52dp, radius 12dp, balanced padding)
+            // Row 1 (Header): Squircle album art 48dp / 12dp radius
             artRectF.set(artLeft, artTop, artLeft + artSize, artTop + artSize);
             if (currentCardArt != null && !currentCardArt.isRecycled()) {
                 canvas.save();
@@ -1729,16 +1823,15 @@ public class HyperRingOverlay {
                 paintAccentCyan.setColor(discColor);
                 paintAccentCyan.setAlpha(Math.min(255, (int) (alpha * 38)));
                 canvas.drawRoundRect(artRectF, dpToPx(12), dpToPx(12), paintAccentCyan);
-
                 paintAccentCyan.setAlpha(intAlpha);
                 canvas.drawCircle(artLeft + artSize / 2f, artTop + artSize / 2f, dpToPx(10), paintAccentCyan);
                 paintOledBlack.setAlpha(intAlpha);
                 canvas.drawCircle(artLeft + artSize / 2f, artTop + artSize / 2f, dpToPx(4), paintOledBlack);
             }
 
-            // Track Title (marquee with 14dp horizontal fading edge) + Artist Name (muted secondary)
+            // Row 1 (Header): Bold title spToPx(14) + artist spToPx(11.5) in #99FFFFFF
             float textLeft = artLeft + artSize + dpToPx(12);
-            float textRight = curW - dpToPx(48); // Leaves space for Cast/Route icon
+            float textRight = curW - dpToPx(48);
             float maxTextW = Math.max(dpToPx(40), textRight - textLeft);
 
             paintTextPrimary.setTextSize(spToPx(14));
@@ -1759,7 +1852,6 @@ public class HyperRingOverlay {
                     canvas.drawText(mediaTitle, textLeft - offset + span, artTop + dpToPx(18), paintTextPrimary);
                 }
 
-                // Horizontal fading edges (14dp length)
                 float fadeLen = dpToPx(14);
                 float totalW = textRight - textLeft;
                 if (cachedMarqueeGradient == null || Math.abs(cachedMarqueeLeft - textLeft) > 1f || Math.abs(cachedMarqueeRight - textRight) > 1f) {
@@ -1781,19 +1873,20 @@ public class HyperRingOverlay {
                 canvas.drawText(truncate(mediaTitle, 20), textLeft, artTop + dpToPx(18), paintTextPrimary);
             }
 
-            paintTextSecondary.setTextSize(spToPx(12));
+            // Artist label: spToPx(11.5) in #99FFFFFF directly below title
+            paintTextSecondary.setTextSize(spToPx(11.5f));
             paintTextSecondary.setTextAlign(Paint.Align.LEFT);
-            paintTextSecondary.setColor(Color.argb(175, 255, 255, 255));
-            paintTextSecondary.setAlpha(Math.min(255, (int) (alpha * 175)));
+            paintTextSecondary.setColor(Color.parseColor("#99FFFFFF"));
+            paintTextSecondary.setAlpha(Math.min(255, (int) (alpha * (0x99 / 255f) * 255)));
             canvas.drawText(truncate(mediaArtist.isEmpty() ? "Media Playback" : mediaArtist, 22), textLeft, artTop + dpToPx(38), paintTextSecondary);
 
-            // Cast / Route icon glyph on top right
-            float castX = curW - dpToPx(26);
+            // Cast / Route icon flush to right margin: curW - dpToPx(24)
+            float castX = curW - dpToPx(24);
             float castY = artTop + artSize * 0.40f;
             paintIconFill.setAlpha(Math.min(255, (int) (alpha * 200)));
             drawCastIcon(canvas, castX, castY, dpToPx(17), paintIconFill);
 
-            // Row 2 & Row 3 alpha transition
+            // Row 2 & Row 3 alpha gate
             float compactH = (customPillHeight > 0) ? dpToPx(customPillHeight) : Math.max(Math.round(cutoutRadius * 2.0f), dpToPx(34));
             float targetCardH = getDefaultCardHeight(currentIsland);
             float expandProgress = Math.max(0.0f, Math.min(1.0f, (curH - compactH) / Math.max(1.0f, targetCardH - compactH)));
@@ -1804,36 +1897,28 @@ public class HyperRingOverlay {
             int controlsIntAlpha = Math.min(255, Math.max(0, (int) (controlsAlpha * 255)));
 
             if (controlsAlpha > 0.02f) {
-                // Row 2 (Controls): 5-button horizontal layout: [Repeat/Shuffle] — [Prev] — [Play/Pause] — [Next] — [Favorite/Heart]
-                float btnY = artTop + artSize + dpToPx(22); // Bug 2: was dpToPx(24), adjusted for 48dp art
+                // Row 2 (Transport): Symmetrical 5-button layout at 52dp spacing
+                // [Repeat/Shuffle (cx-104)] [Prev (cx-52)] [Play/Pause (cx)] [Next (cx+52)] [Heart (cx+104)]
+                float btnY = artTop + artSize + dpToPx(24);
                 float centerX = curW / 2.0f;
-                float b1X = centerX - dpToPx(96);
-                float b2X = centerX - dpToPx(48);
+                float b1X = centerX - dpToPx(104);
+                float b2X = centerX - dpToPx(52);
                 float b3X = centerX;
-                float b4X = centerX + dpToPx(48);
-                float b5X = centerX + dpToPx(96);
+                float b4X = centerX + dpToPx(52);
+                float b5X = centerX + dpToPx(104);
 
                 paintIconFill.setAlpha(controlsIntAlpha);
-                // 1. Repeat / Shuffle
-                drawRepeatIcon(canvas, b1X, btnY, dpToPx(15), paintIconFill, isMediaRepeat);
-
-                // 2. Prev
-                drawPrevIcon(canvas, b2X, btnY, dpToPx(14), paintIconFill);
-
-                // 3. Play / Pause (Prominent center)
+                drawRepeatIcon(canvas, b1X, btnY, dpToPx(13), paintIconFill, isMediaRepeat);
+                drawPrevIcon(canvas, b2X, btnY, dpToPx(13), paintIconFill);
                 if (isMediaPlaying) {
                     drawPauseIcon(canvas, b3X, btnY, dpToPx(16), paintIconFill);
                 } else {
                     drawPlayIcon(canvas, b3X, btnY, dpToPx(16), paintIconFill);
                 }
+                drawNextIcon(canvas, b4X, btnY, dpToPx(13), paintIconFill);
+                drawHeartIcon(canvas, b5X, btnY, dpToPx(13), paintIconFill, isMediaFavorite);
 
-                // 4. Next
-                drawNextIcon(canvas, b4X, btnY, dpToPx(14), paintIconFill);
-
-                // 5. Favorite / Heart
-                drawHeartIcon(canvas, b5X, btnY, dpToPx(15), paintIconFill, isMediaFavorite);
-
-                // Row 3 (Seekbar): Anchored to card bottom — barY = curH - 24dp (Bug 2: was btnY + 28dp)
+                // Row 3 (Seekbar): barY = curH - 24dp
                 float barY = curH - dpToPx(24);
                 float barLeft = dpToPx(62);
                 float barW = curW - dpToPx(124);
@@ -1847,16 +1932,16 @@ public class HyperRingOverlay {
                 if (mediaTrackDuration > 0 && curPos > mediaTrackDuration) curPos = mediaTrackDuration;
                 float progressFraction = (mediaTrackDuration > 0) ? Math.max(0f, Math.min(1f, (float) curPos / (float) mediaTrackDuration)) : 0f;
 
-                // Timestamps flanking the seekbar — drawn above the bar at barY - 8dp (Bug 2)
+                // Monospace timestamps flanking seekbar at barY - 6dp
                 if (paintTextMonospace != null) {
                     paintTextMonospace.setTextSize(spToPx(10.5f));
                     paintTextMonospace.setAlpha(Math.min(255, (int) (controlsAlpha * 160)));
                     paintTextMonospace.setTextAlign(Paint.Align.LEFT);
-                    canvas.drawText(formatTimeMs(curPos), dpToPx(20), barY - dpToPx(8), paintTextMonospace);
+                    canvas.drawText(formatTimeMs(curPos), dpToPx(20), barY - dpToPx(6), paintTextMonospace);
 
                     paintTextMonospace.setTextAlign(Paint.Align.RIGHT);
                     String remStr = (mediaTrackDuration > 0) ? "-" + formatTimeMs(Math.max(0, mediaTrackDuration - curPos)) : "--:--";
-                    canvas.drawText(remStr, curW - dpToPx(20), barY - dpToPx(8), paintTextMonospace);
+                    canvas.drawText(remStr, curW - dpToPx(20), barY - dpToPx(6), paintTextMonospace);
                 }
 
                 // Progress track
@@ -1870,8 +1955,8 @@ public class HyperRingOverlay {
                 artRectF.set(barLeft, barY - barH / 2f, barLeft + (barW * progressFraction), barY + barH / 2f);
                 canvas.drawRoundRect(artRectF, barH / 2f, barH / 2f, paintProgress);
 
-                // Progress Thumb
-                if (mediaTrackDuration > 0) {
+                // Thumb: only render when playback position is fully resolved (duration > 0 and position stable)
+                if (mediaTrackDuration > 0 && mediaTrackPosition >= 0) {
                     canvas.drawCircle(barLeft + (barW * progressFraction), barY, dpToPx(4.5f), paintProgress);
                 }
             }
@@ -2350,7 +2435,8 @@ public class HyperRingOverlay {
 
                 float defaultCardW = (customCardWidth > 0) ? dpToPx(customCardWidth) : dpToPx(320);
                 float cardW = Math.min(displayWidthPx - dpToPx(16), defaultCardW);
-                float cardH = getDefaultCardHeight(currentIsland);
+                int cardState = (previousIsland != STATE_IDLE && !isExpanded) ? previousIsland : currentIsland;
+                float cardH = (customCardHeight > 0) ? dpToPx(customCardHeight) : getDefaultCardHeight(cardState);
                 float cardR = dpToPx(cardRadius > 0 ? cardRadius : 24);
 
                 // Unified single-phase morphing: width, height, and corner radius driven synchronously by progress t
@@ -2370,6 +2456,7 @@ public class HyperRingOverlay {
                 anyMoving = mMov || saMoving;
 
                 if (!mMov && !isExpanded && morphSpring.isAtEquilibrium() && morphSpring.current <= 0.0005f) {
+                    previousIsland = STATE_IDLE;
                     prepareWindowForTarget();
                 }
             } else {
@@ -2495,11 +2582,51 @@ public class HyperRingOverlay {
                 if (isExpanded) {
                     collapseCard();
                     if (handler != null && expandTimeoutMs > 0) handler.postDelayed(this, expandTimeoutMs);
-                } else if (currentIsland == STATE_VOLUME && isMediaPlaying && enableMedia) {
-                    // Smoothly morph cross-fade back to active media pill instead of collapsing into hole and reopening
-                    showIsland(STATE_MEDIA, 0);
+                } else if (currentIsland == STATE_VOLUME) {
+                    // Bug 1: Inline volume-exit branch — do NOT rely on showIsland priority
+                    // stack re-check which may suppress the transition back to STATE_MEDIA.
+                    if (isMediaPlaying && enableMedia) {
+                        // Direct morph: switch state and animate without going through idle.
+                        currentIsland = STATE_MEDIA;
+                        activeIslandType = STATE_MEDIA;
+                        if (crossfadeSpring != null) {
+                            crossfadeSpring.snapTo(0.0f);
+                            crossfadeSpring.setParameters(480f, 0.92f);
+                            crossfadeSpring.setTarget(1.0f);
+                        }
+                        if (morphSpring != null) morphSpring.snapTo(0.0f);
+                        prepareWindowForTarget();
+                        wakeEngineLoop();
+                    } else if (isHyperDLActive && enableHyperDL) {
+                        currentIsland = STATE_HYPERDL;
+                        activeIslandType = STATE_HYPERDL;
+                        if (crossfadeSpring != null) {
+                            crossfadeSpring.snapTo(0.0f);
+                            crossfadeSpring.setParameters(480f, 0.92f);
+                            crossfadeSpring.setTarget(1.0f);
+                        }
+                        if (morphSpring != null) morphSpring.snapTo(0.0f);
+                        prepareWindowForTarget();
+                        wakeEngineLoop();
+                    } else {
+                        startCollapse();
+                    }
                 } else {
-                    startCollapse();
+                    // All other transient states: restore background or collapse
+                    boolean isTransient = (currentIsland == STATE_RINGER
+                            || currentIsland == STATE_NOTIFICATION
+                            || currentIsland == STATE_TORCH);
+                    if (isTransient) {
+                        if (isHyperDLActive && enableHyperDL) {
+                            showIsland(STATE_HYPERDL, 0);
+                        } else if (isMediaPlaying && enableMedia) {
+                            showIsland(STATE_MEDIA, 0);
+                        } else {
+                            startCollapse();
+                        }
+                    } else {
+                        startCollapse();
+                    }
                 }
             }
         }
@@ -2532,19 +2659,51 @@ public class HyperRingOverlay {
                 if (hideInLandscape && isLandscape() && state != STATE_CALIBRATION) return;
                 if (isHUNTucked && state != STATE_CALIBRATION) return;
 
+                // Priority stack — lower priority states may not hijack a higher priority active state.
+                // P0=CALIBRATION, P1=CHARGING, P2=VOLUME/RINGER, P3=NOTIFICATION, P4=TORCH, P5=HYPERDL, P6=MEDIA
+                if (state != STATE_CALIBRATION && currentIsland != STATE_IDLE && !isCollapsing) {
+                    int incomingPri = statePriority(state);
+                    int activePri   = statePriority(currentIsland);
+                    if (incomingPri > activePri) {
+                        // Incoming has lower priority than current; suppress unless current has a timeout
+                        // (transient states have timeouts; persistent states like CHARGING/MEDIA do not)
+                        boolean currentIsTransient = (currentIsland == STATE_VOLUME
+                                || currentIsland == STATE_RINGER
+                                || currentIsland == STATE_NOTIFICATION
+                                || currentIsland == STATE_TORCH);
+                        if (!currentIsTransient) return;
+                    }
+                }
+
+                boolean wasExpanded = isExpanded || (morphSpring != null && (!morphSpring.isAtEquilibrium() || morphSpring.current > 0.0005f));
                 boolean wakingFromIdle = (currentIsland == STATE_IDLE || isCollapsing);
                 int oldState = currentIsland;
-                if (!wakingFromIdle && oldState != state && oldState != STATE_IDLE) {
+
+                if (wasExpanded) {
                     previousIsland = oldState;
-                    if (crossfadeSpring != null) {
-                        crossfadeSpring.snapTo(0.0f);
-                        crossfadeSpring.setParameters(480f, 0.92f); // fast morph cross-fade (~160ms)
-                        crossfadeSpring.setTarget(1.0f);
+                    if (morphSpring != null) {
+                        morphSpring.setParameters(340f, 0.88f);
+                        morphSpring.setTarget(0.0f);
                     }
-                } else if (wakingFromIdle) {
-                    previousIsland = STATE_IDLE;
                     if (crossfadeSpring != null) {
                         crossfadeSpring.snapTo(1.0f);
+                    }
+                } else {
+                    if (morphSpring != null) {
+                        morphSpring.snapTo(0.0f);
+                    }
+                    if (!wakingFromIdle && oldState != state && oldState != STATE_IDLE) {
+                        previousIsland = oldState;
+                        if (crossfadeSpring != null) {
+                            crossfadeSpring.snapTo(0.0f);
+                            crossfadeSpring.setParameters(480f, 0.92f); // fast morph cross-fade (~160ms)
+                            crossfadeSpring.setTarget(1.0f);
+                        }
+                    } else if (wakingFromIdle) {
+                        previousIsland = STATE_IDLE;
+                        if (crossfadeSpring != null) {
+                            crossfadeSpring.snapTo(1.0f);
+                        }
                     }
                 }
 
@@ -2559,10 +2718,6 @@ public class HyperRingOverlay {
                 if (handler != null) handler.removeCallbacks(autoCollapseRunnable);
                 if (timeoutMs > 0 && !previewLock) {
                     if (handler != null) handler.postDelayed(autoCollapseRunnable, timeoutMs);
-                }
-
-                if (morphSpring != null) {
-                    morphSpring.snapTo(0.0f);
                 }
 
                 if (springW != null) {
@@ -2595,6 +2750,24 @@ public class HyperRingOverlay {
             r.run();
         } else if (handler != null) {
             handler.post(r);
+        }
+    }
+
+    /**
+     * Returns numeric priority for a state — lower number = higher priority.
+     * Used by the priority stack guard in showIsland().
+     */
+    private static int statePriority(int state) {
+        switch (state) {
+            case STATE_CALIBRATION: return 0;
+            case STATE_CHARGING:    return 1;
+            case STATE_VOLUME:      return 2;
+            case STATE_RINGER:      return 2;
+            case STATE_NOTIFICATION: return 3;
+            case STATE_TORCH:       return 4;
+            case STATE_HYPERDL:     return 5;
+            case STATE_MEDIA:       return 6;
+            default:                return 99;
         }
     }
 
@@ -2777,22 +2950,24 @@ public class HyperRingOverlay {
     }
 
     private static int getDefaultPillWidth(int state) {
+        // If user has set customPillWidth, that takes precedence in the caller.
+        // Default: 124dp keeps the capsule tight against the punch-hole footprint.
         switch (state) {
-            case STATE_CHARGING:     return dpToPx(138);
-            case STATE_MEDIA:        return dpToPx(148);
-            case STATE_VOLUME:       return dpToPx(144);
-            case STATE_RINGER:       return dpToPx(136);
-            case STATE_NOTIFICATION: return dpToPx(150);
-            case STATE_TORCH:        return dpToPx(132);
-            case STATE_HYPERDL:      return dpToPx(142);
-            default:                 return dpToPx(140);
+            case STATE_CHARGING:     return dpToPx(124);
+            case STATE_MEDIA:        return dpToPx(124);
+            case STATE_VOLUME:       return dpToPx(124);
+            case STATE_RINGER:       return dpToPx(124);
+            case STATE_NOTIFICATION: return dpToPx(124);
+            case STATE_TORCH:        return dpToPx(124);
+            case STATE_HYPERDL:      return dpToPx(124);
+            default:                 return dpToPx(124);
         }
     }
 
     private static int getDefaultCardHeight(int state) {
         if (customCardHeight > 0) return dpToPx(customCardHeight);
         switch (state) {
-            case STATE_MEDIA:    return dpToPx(175); // Bug 2: was 152dp — increased to fit 3-row layout without clipping
+            case STATE_MEDIA:    return dpToPx(178);
             case STATE_CHARGING: return dpToPx(116);
             case STATE_VOLUME:   return dpToPx(92);
             default:             return dpToPx(100);
@@ -2894,9 +3069,17 @@ public class HyperRingOverlay {
         } else if (isExpanded || isMorphFlight) {
             int defaultCardW = (customCardWidth > 0) ? dpToPx(customCardWidth) : dpToPx(320);
             reqW = Math.min(displayWidthPx - dpToPx(16), defaultCardW);
-            int rawCardH = (customCardHeight > 0) ? dpToPx(customCardHeight) : getDefaultCardHeight(currentIsland);
+            int cardState = (previousIsland != STATE_IDLE && !isExpanded) ? previousIsland : currentIsland;
+            int rawCardH = (customCardHeight > 0) ? dpToPx(customCardHeight) : Math.max(getDefaultCardHeight(currentIsland), getDefaultCardHeight(cardState));
             reqH = Math.min(displayHeightPx - topAnchorY - dpToPx(16), rawCardH);
             reqY = topAnchorY;
+        } else if (isCollapsing || currentIsland == STATE_IDLE) {
+            // Fix 5: On collapse settlement, enforce exact circular cutout geometry so the
+            // pill settles precisely over the punch-hole without using the larger compactH.
+            int defaultW = getDefaultPillWidth(currentIsland);
+            reqW = (customPillWidth > 0) ? dpToPx(customPillWidth) : defaultW;
+            reqH = Math.round(cutoutRadius * 2.0f);
+            reqY = Math.round(effCutoutY - cutoutRadius);
         } else {
             int defaultW = getDefaultPillWidth(currentIsland);
             reqW = (customPillWidth > 0) ? dpToPx(customPillWidth) : defaultW;
@@ -2928,9 +3111,10 @@ public class HyperRingOverlay {
             targetX = Math.max(0, Math.min(displayWidthPx - newW, targetX));
         }
 
-        // Bug 1: Only commit params when dimensions actually differ by >= 1px (prevents strobe on rapid triggers)
-        boolean dimChanged = Math.abs(params.width - newW) >= 1 || Math.abs(params.height - newH) >= 1;
-        boolean posChanged = params.y != reqY || params.gravity != targetGravity || params.x != targetX;
+        // Fix 6: Skip updateViewLayout when all four dimensions are within 1px — prevents
+        // rapid-trigger strobing caused by WMS surface re-composition on no-op layout changes.
+        boolean dimChanged = Math.abs(params.width - newW) > 1 || Math.abs(params.height - newH) > 1;
+        boolean posChanged = Math.abs(params.y - reqY) > 1 || params.x != targetX || params.gravity != targetGravity;
         boolean flagChanged = params.flags != targetFlags || params.windowAnimations != 0;
 
         if (dimChanged || posChanged || flagChanged) {
@@ -3000,6 +3184,7 @@ public class HyperRingOverlay {
         } else {
             boolean isMorphFlight = morphSpring != null && (!morphSpring.isAtEquilibrium() || morphSpring.current > 0.0005f);
             if (!isExpanded && !isMorphFlight) {
+                previousIsland = STATE_IDLE;
                 prepareWindowForTarget();
             } else if (isExpanded) {
                 int reqW = Math.round(springW.current);
@@ -3143,7 +3328,20 @@ public class HyperRingOverlay {
                         String line;
                         Pattern flagPattern = Pattern.compile("flags=0x([0-9a-fA-F]+)");
 
-                        while ((line = reader.readLine()) != null) {
+                        while (true) {
+                            try {
+                                line = reader.readLine();
+                            } catch (java.io.IOException ioEx) {
+                                // Fix 2: IOException (pipe broken on Doze/deep sleep) — break to outer
+                                // reconnect loop so event streaming auto-recovers.
+                                break;
+                            }
+                            if (line == null) {
+                                // Fix 2: EOF — logcat process died (Doze, deep sleep, OOM kill).
+                                // Break inner loop; outer loop will destroy, sleep 1500ms, re-exec.
+                                break;
+                            }
+
                             if (!masterEnabled || !checkScreenInteractive()) continue;
 
                             if (enableVolume && (line.contains("Volume controller visible: true")
@@ -3163,6 +3361,16 @@ public class HyperRingOverlay {
                                         previewLock = false;
                                         if (currentIsland != STATE_CALIBRATION) {
                                             showIsland(STATE_VOLUME, 2000);
+                                            // Fix 2: Re-post autoCollapseRunnable from main thread so
+                                            // rapid volume presses always reset the media-restore timer.
+                                            if (handler != null) {
+                                                handler.post(new Runnable() {
+                                                    @Override public void run() {
+                                                        handler.removeCallbacks(autoCollapseRunnable);
+                                                        handler.postDelayed(autoCollapseRunnable, 2000);
+                                                    }
+                                                });
+                                            }
                                         }
                                     }
                                 }
@@ -3236,7 +3444,7 @@ public class HyperRingOverlay {
                         }
                     }
                     try {
-                        Thread.sleep(2000);
+                        Thread.sleep(1500);
                     } catch (InterruptedException ignored) {}
                 }
             }
@@ -3262,6 +3470,12 @@ public class HyperRingOverlay {
                     if (active) {
                         lastFrameNanos = System.nanoTime();
                         wakeEngineLoop();
+                        // Fix 2: On wake from deep sleep/Doze, re-bind display surface and
+                        // refresh battery state which may be stale after the idle window.
+                        checkDisplayRebind();
+                        if (enableCharging) {
+                            queryBatteryHardware();
+                        }
                     }
                 }
                 return active;
@@ -3381,7 +3595,18 @@ public class HyperRingOverlay {
                     int max = am.getStreamMaxVolume(stream);
                     volumePercent = Math.round((cur / (float) Math.max(1, max)) * 100f);
                     if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                        // Fix 1: Organic collapse — let morphSpring reverse from current position
+                        // instead of hard-snapping bounds to compact in one frame.
+                        if (isExpanded) {
+                            collapseCard();
+                        }
                         showIsland(STATE_VOLUME, 2000);
+                        // Fix 2: Re-post autoCollapseRunnable so the fallback path also
+                        // guarantees the volume->media restore timer is always armed.
+                        if (handler != null) {
+                            handler.removeCallbacks(autoCollapseRunnable);
+                            handler.postDelayed(autoCollapseRunnable, 2000);
+                        }
                     }
                 }
                 lastVolumeLevel = cur;
