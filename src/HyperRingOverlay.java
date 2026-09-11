@@ -1819,7 +1819,7 @@ public class HyperRingOverlay {
 
         for (int i = 0; i < 4; i++) {
             float bx = startX + (i * (barW + gap));
-            float bh = maxH * barHeights[i];
+            float bh = isMediaPlaying ? (maxH * barHeights[i]) : Math.max(barW, dpToPx(3.2f));
             float bTop = centerY - (bh / 2.0f);
             float bBottom = centerY + (bh / 2.0f);
             artRectF.set(bx, bTop, bx + barW, bBottom);
@@ -2653,6 +2653,24 @@ public class HyperRingOverlay {
         }
     };
 
+    private static final Runnable collapseSafetyRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isCollapsing) {
+                onAnimationSettled();
+            }
+        }
+    };
+
+    private static final Runnable mediaPauseTimeoutRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!isMediaPlaying && currentIsland == STATE_MEDIA && !isExpanded && !previewLock) {
+                startCollapse();
+            }
+        }
+    };
+
     private static final Runnable hunUntuckRunnable = new Runnable() {
         @Override
         public void run() {
@@ -2664,7 +2682,7 @@ public class HyperRingOverlay {
                 resolveTargetState(SystemClock.uptimeMillis());
                 prepareWindowForTarget();
                 wakeEngineLoop();
-            } else if (isMediaPlaying && enableMedia && !userDismissedMedia) {
+            } else if (enableMedia && !userDismissedMedia && (isMediaPlaying || (mediaTitle != null && !mediaTitle.isEmpty()))) {
                 showIsland(STATE_MEDIA, 0);
             } else if (isHyperDLActive && enableHyperDL) {
                 showIsland(STATE_HYPERDL, 0);
@@ -2771,12 +2789,31 @@ public class HyperRingOverlay {
     public static void showIsland(final int state, final long timeoutMs) {
         if (!masterEnabled && state != STATE_CALIBRATION) return;
         if (hideInLandscape && isLandscape() && state != STATE_CALIBRATION) return;
-        if (isHUNTucked && state != STATE_CALIBRATION) return;
+        if (isHUNTucked && state != STATE_CALIBRATION) {
+            if (state == STATE_VOLUME || state == STATE_CHARGING || state == STATE_RINGER) {
+                isHUNTucked = false;
+                if (handler != null) handler.removeCallbacks(hunUntuckRunnable);
+            } else {
+                return;
+            }
+        }
+        if (handler != null) handler.removeCallbacks(collapseSafetyRunnable);
+        isCollapsing = false;
+
         Runnable r = new Runnable() {
             @Override
             public void run() {
                 if (hideInLandscape && isLandscape() && state != STATE_CALIBRATION) return;
-                if (isHUNTucked && state != STATE_CALIBRATION) return;
+                if (isHUNTucked && state != STATE_CALIBRATION) {
+                    if (state == STATE_VOLUME || state == STATE_CHARGING || state == STATE_RINGER) {
+                        isHUNTucked = false;
+                        if (handler != null) handler.removeCallbacks(hunUntuckRunnable);
+                    } else {
+                        return;
+                    }
+                }
+                if (handler != null) handler.removeCallbacks(collapseSafetyRunnable);
+                isCollapsing = false;
 
                 // Priority stack — lower priority states may not hijack a higher priority active state.
                 // P0=CALIBRATION, P1=CHARGING, P2=VOLUME/RINGER, P3=NOTIFICATION, P4=TORCH, P5=HYPERDL, P6=MEDIA
@@ -2940,6 +2977,10 @@ public class HyperRingOverlay {
                 previewLock = false;
                 isCollapsing = true;
                 isExpanded = false;
+                if (handler != null) {
+                    handler.removeCallbacks(collapseSafetyRunnable);
+                    handler.postDelayed(collapseSafetyRunnable, 350);
+                }
 
                 if (morphSpring != null) {
                     morphSpring.snapTo(0.0f);
@@ -3289,11 +3330,13 @@ public class HyperRingOverlay {
             }
         } catch (Throwable ignored) {}
 
+        boolean visChanged = false;
         if (ringView.getVisibility() != View.VISIBLE) {
             ringView.setVisibility(View.VISIBLE);
+            visChanged = true;
         }
 
-        if (dimChanged || posChanged || flagChanged) {
+        if (dimChanged || posChanged || flagChanged || visChanged) {
             try { windowManager.updateViewLayout(ringView, params); } catch (Exception ignored) {}
         }
     }
@@ -3304,6 +3347,9 @@ public class HyperRingOverlay {
      */
     private static void onAnimationSettled() {
         if (params == null || windowManager == null || ringView == null) return;
+        if (handler != null) {
+            handler.removeCallbacks(collapseSafetyRunnable);
+        }
         if (ringView.getLayerType() != View.LAYER_TYPE_NONE) {
             ringView.setLayerType(View.LAYER_TYPE_NONE, null);
         }
@@ -3378,7 +3424,7 @@ public class HyperRingOverlay {
                     }
                     if (enableMedia) {
                         long nowTick = SystemClock.uptimeMillis();
-                        if (nowTick - lastMediaPoll > 4000) {
+                        if (nowTick - lastMediaPoll > 1500) {
                             lastMediaPoll = nowTick;
                             queryMediaSessionNative();
                         }
@@ -3426,7 +3472,7 @@ public class HyperRingOverlay {
                     }
 
                     // Auto state transitions (priority-based)
-                    if (!masterEnabled || isCollapsing) {
+                    if (!masterEnabled) {
                         return;
                     }
                     if (currentIsland == STATE_CHARGING && isCharging) {
@@ -3438,13 +3484,17 @@ public class HyperRingOverlay {
                         if (currentIsland != STATE_HYPERDL && currentIsland != STATE_CALIBRATION) {
                             showIsland(STATE_HYPERDL, 0);
                         }
-                    } else if (isMediaPlaying && enableMedia) {
-                        if ((currentIsland != STATE_MEDIA && currentIsland != STATE_CALIBRATION)
-                                || (currentIsland == STATE_MEDIA && ringView != null && ringView.getVisibility() != View.VISIBLE && (!hideInLandscape || !isLandscape()))) {
-                            showIsland(STATE_MEDIA, 0);
+                    } else if (enableMedia && !userDismissedMedia && (isMediaPlaying || currentIsland == STATE_MEDIA)) {
+                        if (isMediaPlaying) {
+                            if ((currentIsland != STATE_MEDIA && currentIsland != STATE_CALIBRATION)
+                                    || (currentIsland == STATE_MEDIA && ringView != null && ringView.getVisibility() != View.VISIBLE && (!hideInLandscape || !isLandscape()))) {
+                                isCollapsing = false;
+                                showIsland(STATE_MEDIA, 0);
+                            }
                         }
+                        // When paused, allow mediaPauseTimeoutRunnable to handle the 20s grace period
                     } else if (currentIsland != STATE_CHARGING && currentIsland != STATE_CALIBRATION) {
-                        if (currentIsland != STATE_IDLE) {
+                        if (currentIsland != STATE_IDLE && !isCollapsing) {
                             startCollapse();
                         }
                     }
@@ -4045,15 +4095,20 @@ public class HyperRingOverlay {
                     if (isMediaPlaying != prevPlay) {
                         userDismissedMedia = false;
                         if (isMediaPlaying && enableMedia) {
+                            if (handler != null) handler.removeCallbacks(mediaPauseTimeoutRunnable);
                             if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                                isCollapsing = false;
                                 showIsland(STATE_MEDIA, 0);
                             }
                         } else if (!isMediaPlaying) {
-                            if (currentIsland == STATE_MEDIA) {
-                                startCollapse();
+                            // Paused: give 20s grace period instead of disappearing instantly
+                            if (currentIsland == STATE_MEDIA && handler != null) {
+                                handler.removeCallbacks(mediaPauseTimeoutRunnable);
+                                handler.postDelayed(mediaPauseTimeoutRunnable, 20000);
                             }
                         }
-                    } else if (isMediaPlaying && enableMedia && currentIsland == STATE_IDLE && !isCollapsing && !userDismissedMedia) {
+                    } else if (isMediaPlaying && enableMedia && currentIsland == STATE_IDLE && !userDismissedMedia) {
+                        isCollapsing = false;
                         if (!previewLock && currentIsland != STATE_CALIBRATION) {
                             showIsland(STATE_MEDIA, 0);
                         }
@@ -4228,16 +4283,21 @@ public class HyperRingOverlay {
                     }
 
                     if (isMediaPlaying != prevPlay) {
+                        userDismissedMedia = false;
                         if (isMediaPlaying && enableMedia) {
+                            if (handler != null) handler.removeCallbacks(mediaPauseTimeoutRunnable);
                             if (!previewLock && currentIsland != STATE_CALIBRATION) {
+                                isCollapsing = false;
                                 showIsland(STATE_MEDIA, 0);
                             }
                         } else if (!isMediaPlaying) {
-                            if (currentIsland == STATE_MEDIA) {
-                                startCollapse();
+                            if (currentIsland == STATE_MEDIA && handler != null) {
+                                handler.removeCallbacks(mediaPauseTimeoutRunnable);
+                                handler.postDelayed(mediaPauseTimeoutRunnable, 20000);
                             }
                         }
-                    } else if (isMediaPlaying && enableMedia && currentIsland == STATE_IDLE && !isCollapsing) {
+                    } else if (isMediaPlaying && enableMedia && currentIsland == STATE_IDLE && !userDismissedMedia) {
+                        isCollapsing = false;
                         if (!previewLock && currentIsland != STATE_CALIBRATION) {
                             showIsland(STATE_MEDIA, 0);
                         }
