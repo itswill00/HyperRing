@@ -349,6 +349,7 @@ public class HyperRingOverlay {
     private static Vibrator vibrator = null;
     private static boolean enableHaptics = true;
 
+    @SuppressWarnings("deprecation")
     private static void performHaptic(int type) {
         if (!enableHaptics || context == null) return;
         try {
@@ -356,12 +357,16 @@ public class HyperRingOverlay {
                 vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
             }
             if (vibrator != null && vibrator.hasVibrator()) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    int effectId = (type == 1) ? VibrationEffect.EFFECT_CLICK : VibrationEffect.EFFECT_TICK;
-                    vibrator.vibrate(VibrationEffect.createPredefined(effectId));
-                } else {
-                    vibrator.vibrate(12);
+                if (Build.VERSION.SDK_INT >= 29) {
+                    try {
+                        Method m = VibrationEffect.class.getMethod("createPredefined", int.class);
+                        int effectId = (type == 1) ? 0 : 2; // EFFECT_CLICK = 0, EFFECT_TICK = 2
+                        Object effect = m.invoke(null, effectId);
+                        vibrator.vibrate((VibrationEffect) effect);
+                        return;
+                    } catch (Throwable ignored) {}
                 }
+                vibrator.vibrate((long) (type == 1 ? 20 : 10));
             }
         } catch (Throwable ignored) {}
     }
