@@ -74,8 +74,9 @@
       </button>
     </nav>
 
-    <!-- Main Scrollable Content Container -->
+    <!-- Main Scrollable Content -->
     <main class="content-area">
+
       <!-- Master Island Enable / Disable Card -->
       <section class="master-toggle-card" :class="{ 'is-disabled': !config.enabled }">
         <div class="master-toggle-info">
@@ -96,98 +97,1078 @@
       </section>
 
       <!-- Persistent Live Preview Widget -->
-      <LivePreviewBar
-        v-if="currentTab === 'placement' || currentTab === 'geometry'"
-        :preview-mode="previewMode"
-        :preview-mode-label="previewModeLabel"
-        @set-preview-mode="setPreviewMode"
-      />
+      <section class="preview-bar-card">
+        <div class="preview-bar-left">
+          <span class="preview-bar-title">Live preview</span>
+          <span class="preview-bar-sub">{{ previewModeLabel }}</span>
+        </div>
+        <div class="segment-container preview-segments">
+          <button
+            type="button"
+            class="segment-btn"
+            :class="{ active: previewMode === 'off' }"
+            @click="setPreviewMode('off')"
+          >
+            Off
+          </button>
+          <button
+            type="button"
+            class="segment-btn"
+            :class="{ active: previewMode === 'reticle' }"
+            @click="setPreviewMode('reticle')"
+          >
+            Reticle
+          </button>
+          <button
+            type="button"
+            class="segment-btn"
+            :class="{ active: previewMode === 'pill' }"
+            @click="setPreviewMode('pill')"
+          >
+            Pill
+          </button>
+          <button
+            type="button"
+            class="segment-btn"
+            :class="{ active: previewMode === 'card' }"
+            @click="setPreviewMode('card')"
+          >
+            Card
+          </button>
+        </div>
+      </section>
 
-      <!-- Tab 1: Cutout & Position -->
-      <TabPlacement
-        v-if="currentTab === 'placement'"
-        :config="config"
-        :live-state="liveState"
-        :preview-mode="previewMode"
-        :is-reticle-active="isReticleActive"
-        :dpad-step="dpadStep"
-        :sim-cutout-left="parseFloat(simCutoutLeft)"
-        :sim-cutout-top="simCutoutTop"
-        :sim-cutout-size="simCutoutSize"
-        :sim-pill-left="parseFloat(simPillLeft)"
-        :sim-pill-top="simPillTop"
-        :sim-pill-width="simPillWidth"
-        :sim-pill-height="simPillHeight"
-        :sim-card-width="simCardWidth"
-        :sim-card-height="simCardHeight"
-        :sim-card-radius="simCardRadius"
-        @toggle-reticle="toggleReticle"
-        @set-alignment="setAlignment"
-        @toggle-config="toggleConfig"
-        @save-config="saveConfig"
-        @save-debounced="saveConfigDebounced"
-        @nudge="nudge"
-        @update-dpad-step="step => dpadStep = step"
-        @step-value="stepValue"
-      />
+      <!-- TAB 1: PLACEMENT & ALIGNMENT -->
+      <div v-if="currentTab === 'placement'">
+        <!-- Live Cutout Simulator Preview -->
+        <div class="section-title">Visual simulator</div>
+        <div class="sim-bezel-box">
+          <div class="sim-screen-boundary">
+            <!-- Simulated Card (when previewMode is card) -->
+            <div
+              v-if="previewMode === 'card'"
+              class="sim-card"
+              :style="{
+                left: simPillLeft + '%',
+                top: (simCutoutTop + Math.round(simCardHeight / 2) + 2) + 'px',
+                width: simCardWidth + 'px',
+                height: simCardHeight + 'px',
+                borderRadius: simCardRadius + 'px'
+              }"
+            >
+              <span style="font-size: 8px; color: var(--on-surface); opacity: 0.9; font-weight: 600;">{{ liveState.media_title || 'Now Playing' }}</span>
+              <span style="font-size: 7px; color: var(--on-surface-variant);">{{ liveState.media_artist || 'Expanded Card' }}</span>
+            </div>
+            <!-- Simulated Pill -->
+            <div
+              v-else
+              class="sim-pill"
+              :style="{
+                left: simPillLeft + '%',
+                top: simPillTop + 'px',
+                width: simPillWidth + 'px',
+                height: simPillHeight + 'px'
+              }"
+            >
+              <span style="font-size: 8px; color: var(--on-surface-variant); opacity: 0.85;">{{ liveState.battery_pct || 100 }}%</span>
+              <span style="font-size: 8px; color: var(--on-surface); opacity: 0.85;">Hyper</span>
+            </div>
+            <!-- Physical Camera Cutout -->
+            <div
+              class="sim-punch-hole"
+              :style="{
+                left: simCutoutLeft + '%',
+                top: simCutoutTop + 'px',
+                width: simCutoutSize + 'px',
+                height: simCutoutSize + 'px'
+              }"
+            ></div>
+          </div>
+        </div>
 
-      <!-- Tab 2: Geometry & Scale -->
-      <TabGeometry
-        v-else-if="currentTab === 'geometry'"
-        :config="config"
-        :preview-mode="previewMode"
-        :sim-cutout-left="parseFloat(simCutoutLeft)"
-        :sim-cutout-top="simCutoutTop"
-        :sim-cutout-size="simCutoutSize"
-        :sim-pill-left="parseFloat(simPillLeft)"
-        :sim-pill-top="simPillTop"
-        :sim-pill-width="simPillWidth"
-        :sim-pill-height="simPillHeight"
-        :sim-card-width="simCardWidth"
-        :sim-card-height="simCardHeight"
-        :sim-card-radius="simCardRadius"
-        @save-debounced="saveConfigDebounced"
-        @set-card-mode="setCardPositionMode"
-        @step-pill-width="stepPillWidth"
-        @step-pill-height="stepPillHeight"
-        @step-card-width="stepCardWidth"
-        @step-card-height="stepCardHeight"
-        @step-value="stepValue"
-      />
+        <!-- High-contrast Alignment Reticle Toggle -->
+        <div
+          class="reticle-toggle-bar"
+          :class="{ active: isReticleActive }"
+          @click="toggleReticle"
+        >
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <Icons name="crosshair" :size="18" :style="{ color: isReticleActive ? 'var(--on-primary-container)' : 'var(--on-surface-variant)' }" />
+            <div>
+              <div class="row-title" :style="{ color: isReticleActive ? 'var(--on-primary-container)' : 'var(--on-surface)' }">
+                {{ isReticleActive ? 'Alignment reticle active' : 'Show alignment reticle' }}
+              </div>
+              <div class="row-sub">
+                {{ isReticleActive ? 'Transparent overlay active on screen. Tap to hide.' : 'High-contrast reticle to align with physical lens' }}
+              </div>
+            </div>
+          </div>
+          <span class="badge-pill" :class="isReticleActive ? 'active' : 'standby'">
+            {{ isReticleActive ? 'On' : 'Off' }}
+          </span>
+        </div>
 
-      <!-- Tab 3: Events & Features -->
-      <TabFeatures
-        v-else-if="currentTab === 'features'"
-        :config="config"
-        @toggle-config="toggleConfig"
-        @save-config="saveConfig"
-        @save-debounced="saveConfigDebounced"
-        @step-value="stepValue"
-      />
+        <!-- Alignment Mode & Notch -->
+        <div class="section-title">Punch hole alignment</div>
+        <section class="md3-card">
+          <div class="preset-row">
+            <span class="row-meta-label">Alignment</span>
+            <div class="segment-container">
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.pill_alignment === 'center' }"
+                @click="setAlignment('center')"
+              >
+                Center
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.pill_alignment === 'left' }"
+                @click="setAlignment('left')"
+              >
+                Left
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.pill_alignment === 'right' }"
+                @click="setAlignment('right')"
+              >
+                Right
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.pill_alignment === 'freeform' }"
+                @click="setAlignment('freeform')"
+              >
+                Freeform
+              </button>
+            </div>
+          </div>
 
-      <!-- Tab 4: Motion Physics -->
-      <TabMotion
-        v-else-if="currentTab === 'motion'"
-        :config="config"
-        :current-motion-profile="currentMotionProfile"
-        @save-debounced="saveConfigDebounced"
-        @apply-motion-preset="applyMotionPreset"
-      />
+          <!-- Notch Mode Toggle -->
+          <div class="md3-list-row" style="padding: 10px 0 0 0; border-top: 1px solid var(--surface-container-high); margin-top: 8px;" @click="toggleConfig('notch_mode')">
+            <div class="row-left">
+              <div class="row-meta">
+                <div class="row-title">Attach to top bezel (Notch)</div>
+                <div class="row-sub">Pins island flush against top screen frame</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.notch_mode" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+        </section>
 
-      <!-- Tab 5: Tools & Diagnostics -->
-      <TabTools
-        v-else-if="currentTab === 'tools'"
-        :live-state="liveState"
-        :daemon-pid="daemonPid"
-        :show-logs="showLogs"
-        :log-content="logContent"
-        @send-trigger="sendTrigger"
-        @toggle-reticle="toggleReticle"
-        @restart-daemon="restartDaemon"
-        @toggle-log-view="toggleLogView"
-        @fetch-logs="fetchLogs"
-        @reset-defaults="resetDefaults"
-      />
+        <!-- Directional D-Pad Nudge Widget -->
+        <div class="section-title">Directional nudge</div>
+        <section class="dpad-card">
+          <div style="font-size: 11px; color: var(--on-surface-variant); margin-bottom: 4px;">
+            Micro-step camera placement
+          </div>
+          <div class="dpad-grid">
+            <div></div>
+            <button type="button" class="dpad-btn" @click="nudge(0, -1)" title="Nudge Up">
+              <Icons name="arrow-up" :size="16" />
+            </button>
+            <div></div>
+            <button type="button" class="dpad-btn" @click="nudge(-1, 0)" title="Nudge Left">
+              <Icons name="arrow-left" :size="16" />
+            </button>
+            <div class="dpad-center">
+              {{ dpadStep }}px
+            </div>
+            <button type="button" class="dpad-btn" @click="nudge(1, 0)" title="Nudge Right">
+              <Icons name="arrow-right" :size="16" />
+            </button>
+            <div></div>
+            <button type="button" class="dpad-btn" @click="nudge(0, 1)" title="Nudge Down">
+              <Icons name="arrow-down" :size="16" />
+            </button>
+            <div></div>
+          </div>
+          <div class="dpad-footer">
+            <span style="font-size: 11px; color: var(--on-surface-variant);">Step increment</span>
+            <div class="segment-container">
+              <button
+                v-for="s in [1, 5, 10]"
+                :key="s"
+                type="button"
+                class="segment-btn"
+                :class="{ active: dpadStep === s }"
+                @click="dpadStep = s"
+              >
+                {{ s }}px
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Precise Camera Cutout Coordinates -->
+        <div class="section-title">Hardware cutout coordinates</div>
+        <section class="md3-card">
+          <!-- Horizontal Center X -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Horizontal center (X)</span>
+              <span class="stepper-val">{{ config.cutout_x }} px</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('cutout_x', -1, 0, 1440)">-</button>
+              <input
+                type="range"
+                min="0"
+                max="1440"
+                step="1"
+                v-model.number="config.cutout_x"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('cutout_x', 1, 0, 1440)">+</button>
+            </div>
+          </div>
+
+          <!-- Vertical Center Y -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Vertical center (Y)</span>
+              <span class="stepper-val">{{ config.cutout_y }} px</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('cutout_y', -1, 0, 240)">-</button>
+              <input
+                type="range"
+                min="0"
+                max="240"
+                step="1"
+                v-model.number="config.cutout_y"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('cutout_y', 1, 0, 240)">+</button>
+            </div>
+          </div>
+
+          <!-- Cutout Radius -->
+          <div class="stepper-setting-block" style="margin-bottom: 0;">
+            <div class="stepper-header">
+              <span class="stepper-title">Camera radius</span>
+              <span class="stepper-val">{{ config.cutout_radius }} px</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('cutout_radius', -1, 12, 70)">-</button>
+              <input
+                type="range"
+                min="12"
+                max="70"
+                step="1"
+                v-model.number="config.cutout_radius"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('cutout_radius', 1, 12, 70)">+</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Island Micro Offsets -->
+        <div class="section-title">Island position offsets</div>
+        <section class="md3-card">
+          <!-- Vertical Nudge Y -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Vertical offset</span>
+              <span class="stepper-val">{{ config.y_offset > 0 ? `+${config.y_offset}` : config.y_offset }} px</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('y_offset', -1, -150, 200)">-</button>
+              <input
+                type="range"
+                min="-150"
+                max="200"
+                step="1"
+                v-model.number="config.y_offset"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('y_offset', 1, -150, 200)">+</button>
+            </div>
+          </div>
+
+          <!-- Horizontal Nudge X -->
+          <div class="stepper-setting-block" style="margin-bottom: 0;">
+            <div class="stepper-header">
+              <span class="stepper-title">Horizontal offset</span>
+              <span class="stepper-val">{{ config.x_offset > 0 ? `+${config.x_offset}` : config.x_offset }} px</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('x_offset', -1, -250, 250)">-</button>
+              <input
+                type="range"
+                min="-250"
+                max="250"
+                step="1"
+                v-model.number="config.x_offset"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('x_offset', 1, -250, 250)">+</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- TAB 2: GEOMETRY & SIZING -->
+      <div v-else-if="currentTab === 'geometry'">
+        <div class="section-title">Compact pill dimensions</div>
+        <section class="md3-card">
+          <!-- Custom Pill Width -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Pill width</span>
+              <span class="stepper-val">{{ config.pill_width === 0 ? 'Auto' : `${config.pill_width} dp` }}</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepPillWidth(-5)">-</button>
+              <input
+                type="range"
+                min="0"
+                max="340"
+                step="5"
+                v-model.number="config.pill_width"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepPillWidth(5)">+</button>
+            </div>
+          </div>
+
+          <!-- Custom Pill Height -->
+          <div class="stepper-setting-block" style="margin-bottom: 0;">
+            <div class="stepper-header">
+              <span class="stepper-title">Pill height</span>
+              <span class="stepper-val">{{ config.pill_height === 0 ? 'Auto' : `${config.pill_height} dp` }}</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepPillHeight(-2)">-</button>
+              <input
+                type="range"
+                min="0"
+                max="60"
+                step="2"
+                v-model.number="config.pill_height"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepPillHeight(2)">+</button>
+            </div>
+          </div>
+        </section>
+
+        <div class="section-title">Expanded card dimensions</div>
+        <section class="md3-card">
+          <!-- Card Width -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Card width</span>
+              <span class="stepper-val">{{ config.card_width === 0 ? 'Auto (320 dp)' : `${config.card_width} dp` }}</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepCardWidth(-10)">-</button>
+              <input
+                type="range"
+                min="0"
+                max="420"
+                step="10"
+                v-model.number="config.card_width"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepCardWidth(10)">+</button>
+            </div>
+          </div>
+
+          <!-- Card Height -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Card height</span>
+              <span class="stepper-val">{{ config.card_height === 0 ? 'Auto' : `${config.card_height} dp` }}</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepCardHeight(-5)">-</button>
+              <input
+                type="range"
+                min="0"
+                max="220"
+                step="5"
+                v-model.number="config.card_height"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepCardHeight(5)">+</button>
+            </div>
+          </div>
+
+          <!-- Card Top Margin -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Top margin</span>
+              <span class="stepper-val">{{ config.card_y_offset > 0 ? `+${config.card_y_offset}` : config.card_y_offset }} dp</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('card_y_offset', -2, -40, 60)">-</button>
+              <input
+                type="range"
+                min="-40"
+                max="60"
+                step="2"
+                v-model.number="config.card_y_offset"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('card_y_offset', 2, -40, 60)">+</button>
+            </div>
+          </div>
+
+          <!-- Card Corner Radius -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Corner radius</span>
+              <span class="stepper-val">{{ config.card_radius }} dp</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('card_radius', -2, 14, 36)">-</button>
+              <input
+                type="range"
+                min="14"
+                max="36"
+                step="2"
+                v-model.number="config.card_radius"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('card_radius', 2, 14, 36)">+</button>
+            </div>
+          </div>
+
+          <!-- Card Position Mode -->
+          <div class="preset-row" style="margin-top: 10px; margin-bottom: 2px;">
+            <span class="row-meta-label">Placement mode</span>
+            <div class="segment-container">
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: (config.card_position_mode || 'below') === 'below' }"
+                @click="setCardPositionMode('below')"
+              >
+                Float below
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.card_position_mode === 'cover' }"
+                @click="setCardPositionMode('cover')"
+              >
+                Cover notch
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <div class="section-title">Card behavior</div>
+        <section class="md3-card">
+          <!-- Expand Timeout -->
+          <div class="stepper-setting-block" style="margin-bottom: 0;">
+            <div class="stepper-header">
+              <span class="stepper-title">Auto-collapse timeout</span>
+              <span class="stepper-val">{{ (config.expand_timeout_ms / 1000).toFixed(1) }} s</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('expand_timeout_ms', -500, 1500, 8000)">-</button>
+              <input
+                type="range"
+                min="1500"
+                max="8000"
+                step="500"
+                v-model.number="config.expand_timeout_ms"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('expand_timeout_ms', 500, 1500, 8000)">+</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- TAB 3: EVENTS & LISTENERS -->
+      <div v-else-if="currentTab === 'features'">
+        <div class="section-title">Active listeners</div>
+        <section class="md3-list-group">
+          <!-- Media Session -->
+          <div class="md3-list-row" @click="toggleConfig('enable_media')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="music" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Now playing</div>
+                <div class="row-sub">Track title and audio spectrum</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_media" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Charging Telemetry -->
+          <div class="md3-list-row" @click="toggleConfig('enable_charging')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="bolt" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Battery charging</div>
+                <div class="row-sub">Wattage and power telemetry</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_charging" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Volume Key Expansion -->
+          <div class="md3-list-row" @click="toggleConfig('enable_volume')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="wave" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Volume HUD</div>
+                <div class="row-sub">Level indicator on rocker press</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_volume" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Ringer Mode -->
+          <div class="md3-list-row" @click="toggleConfig('enable_ringer')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="vibrate" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Ringer mode</div>
+                <div class="row-sub">Silent, vibrate, and ring pill</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_ringer" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Notifications -->
+          <div class="md3-list-row" @click="toggleConfig('enable_notifications')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="bell" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Notifications</div>
+                <div class="row-sub">Heads-up app alerts</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_notifications" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Flashlight / Torch -->
+          <div class="md3-list-row" @click="toggleConfig('enable_torch')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="power" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Flashlight and torch</div>
+                <div class="row-sub">Indicator on torch state change</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_torch" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Haptics Toggle -->
+          <div class="md3-list-row" style="padding: 12px 0;" @click="toggleConfig('enable_haptics')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="sparkles" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Haptic micro-feedback</div>
+                <div class="row-sub">Tactile clicks and ticks on gestures and taps</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_haptics" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+        </section>
+
+        <!-- HyperOS Media Experience -->
+        <div class="section-title">Media & playback</div>
+        <section class="md3-card" style="margin-bottom: 24px;">
+          <!-- Compact Album Art Toggle -->
+          <div class="md3-list-row" style="padding: 12px 0;" @click="toggleConfig('media_show_pill_art')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="image" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Show album art in compact pill</div>
+                <div class="row-sub">Cover art thumbnail on the left wing</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.media_show_pill_art" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Pill Artwork Style Segmented Selector -->
+          <div class="preset-row" v-if="config.media_show_pill_art" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--surface-container-high);">
+            <span class="row-meta-label">Pill artwork style</span>
+            <div class="segment-container">
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_art_style === 'rounded' }"
+                @click="config.media_art_style = 'rounded'; saveConfig();"
+              >
+                Rounded
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_art_style === 'squircle' }"
+                @click="config.media_art_style = 'squircle'; saveConfig();"
+              >
+                Squircle
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_art_style === 'circle' }"
+                @click="config.media_art_style = 'circle'; saveConfig();"
+              >
+                Circle
+              </button>
+            </div>
+          </div>
+
+          <!-- Waveform Visualizer Toggle -->
+          <div class="md3-list-row" style="padding: 12px 0; border-top: 1px solid var(--surface-container-high);" @click="toggleConfig('media_show_waveform')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="wave" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Animated audio spectrum / waveform</div>
+                <div class="row-sub">Dynamic frequency equalizer bars</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.media_show_waveform" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Audio Pulse Monochrome Presets -->
+          <div class="preset-row" v-if="config.media_show_waveform" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--surface-container-high);">
+            <span class="row-meta-label">Pulse accent</span>
+            <div class="segment-container" style="gap: 4px;">
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_pulse_color === 'auto' || !config.media_pulse_color }"
+                @click="config.media_pulse_color = 'auto'; saveConfig();"
+              >
+                Dynamic (Auto)
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_pulse_color === '#FFFFFF' }"
+                @click="config.media_pulse_color = '#FFFFFF'; saveConfig();"
+              >
+                Pure White
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: config.media_pulse_color === '#A1A1AA' }"
+                @click="config.media_pulse_color = '#A1A1AA'; saveConfig();"
+              >
+                Muted Zinc
+              </button>
+            </div>
+          </div>
+
+          <!-- Dynamic Ambient Glow Toggle -->
+          <div class="md3-list-row" style="padding: 12px 0; border-top: 1px solid var(--surface-container-high);" @click="toggleConfig('media_ambient_glow')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="eye" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Dynamic ambient color glow</div>
+                <div class="row-sub">Radial gradient tinted by album art</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.media_ambient_glow" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Ambient Glow Opacity Slider -->
+          <div class="stepper-setting-block" v-if="config.media_ambient_glow" style="margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--surface-container-high);">
+            <div class="stepper-header">
+              <span class="stepper-title">Ambient glow opacity</span>
+              <span class="stepper-val">{{ config.media_glow_opacity }}%</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('media_glow_opacity', -5, 0, 50)">-</button>
+              <input
+                type="range"
+                min="0"
+                max="50"
+                step="5"
+                v-model.number="config.media_glow_opacity"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('media_glow_opacity', 5, 0, 50)">+</button>
+            </div>
+          </div>
+
+          <!-- Marquee Scrolling Toggle -->
+          <div class="md3-list-row" style="padding: 12px 0; margin-bottom: 0; border-top: 1px solid var(--surface-container-high);" @click="toggleConfig('media_marquee')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="sliders" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Marquee scrolling for long titles</div>
+                <div class="row-sub">Smooth text marquee for long song names</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.media_marquee" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+        </section>
+
+        <div class="section-title">Automations</div>
+        <section class="md3-list-group">
+          <!-- Auto-expand charging -->
+          <div class="md3-list-row" @click="toggleConfig('auto_expand_charging')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="maximize" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Expand on charging</div>
+                <div class="row-sub">Open power card on charger connection</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.auto_expand_charging" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Auto-expand media -->
+          <div class="md3-list-row" @click="toggleConfig('auto_expand_media')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="play" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Expand on track change</div>
+                <div class="row-sub">Briefly show track controls on new song</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.auto_expand_media" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Auto-expand notification -->
+          <div class="md3-list-row" @click="toggleConfig('auto_expand_notification')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="lens" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Expand on notification</div>
+                <div class="row-sub">Briefly show banner details on new alert</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.auto_expand_notification" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Stealth Ring in Idle -->
+          <div class="md3-list-row" @click="toggleConfig('stealth_ring_idle')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="eye-off" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Stealth idle</div>
+                <div class="row-sub">Hide ring when screen is inactive</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.stealth_ring_idle" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Landscape Guard -->
+          <div class="md3-list-row" @click="toggleConfig('hide_in_landscape')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="shield" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Landscape guard</div>
+                <div class="row-sub">Disable overlay in games and movies</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.hide_in_landscape" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <!-- TAB 4: MOTION PHYSICS -->
+      <div v-else-if="currentTab === 'motion'">
+        <div class="section-title">Spring dynamics</div>
+        <section class="md3-card">
+          <div class="preset-row">
+            <span class="row-meta-label">Curve preset</span>
+            <div class="segment-container">
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentMotionProfile === 'fluid' }"
+                @click="applyMotionPreset('fluid')"
+              >
+                HyperOS
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentMotionProfile === 'kinetic' }"
+                @click="applyMotionPreset('kinetic')"
+              >
+                Kinetic
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentMotionProfile === 'snappy' }"
+                @click="applyMotionPreset('snappy')"
+              >
+                Snappy
+              </button>
+              <button
+                type="button"
+                class="segment-btn"
+                :class="{ active: currentMotionProfile === 'float' }"
+                @click="applyMotionPreset('float')"
+              >
+                Float
+              </button>
+            </div>
+          </div>
+
+          <!-- Stiffness -->
+          <div class="stepper-setting-block">
+            <div class="stepper-header">
+              <span class="stepper-title">Spring stiffness</span>
+              <span class="stepper-val">{{ config.spring_stiffness }}</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('spring_stiffness', -20, 150, 650)">-</button>
+              <input
+                type="range"
+                min="150"
+                max="650"
+                step="10"
+                v-model.number="config.spring_stiffness"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('spring_stiffness', 20, 150, 650)">+</button>
+            </div>
+          </div>
+
+          <!-- Damping -->
+          <div class="stepper-setting-block" style="margin-bottom: 0;">
+            <div class="stepper-header">
+              <span class="stepper-title">Damping ratio</span>
+              <span class="stepper-val">{{ config.spring_damping }}</span>
+            </div>
+            <div class="stepper-controls">
+              <button type="button" class="step-btn" @click="stepValue('spring_damping', -0.02, 0.55, 0.96)">-</button>
+              <input
+                type="range"
+                min="0.55"
+                max="0.96"
+                step="0.02"
+                v-model.number="config.spring_damping"
+                @input="saveConfigDebounced"
+                class="slider-range"
+              />
+              <button type="button" class="step-btn" @click="stepValue('spring_damping', 0.02, 0.55, 0.96)">+</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- TAB 5: TOOLS & DIAGNOSTICS -->
+      <div v-else-if="currentTab === 'tools'">
+        <!-- Live Island Telemetry Status -->
+        <div class="section-title">Island live telemetry</div>
+        <section class="md3-card">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 11px;">
+            <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
+              <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">Active Island</div>
+              <div style="color: var(--on-surface); font-weight: 600; text-transform: capitalize;">
+                {{ liveState.active_island || 'Idle' }}
+              </div>
+            </div>
+            <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
+              <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">Battery / Power</div>
+              <div style="color: var(--on-surface); font-weight: 600;">
+                {{ liveState.battery_pct }}% · {{ liveState.battery_charging ? 'Charging' : 'Discharging' }}
+              </div>
+            </div>
+            <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
+              <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">Now Playing</div>
+              <div style="color: var(--on-surface); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                {{ liveState.media_playing ? (liveState.media_title || 'Media active') : 'Inactive' }}
+              </div>
+            </div>
+            <div style="background: var(--surface-container-high); padding: 8px 10px; border-radius: 8px;">
+              <div style="color: var(--on-surface-variant); font-size: 10px; margin-bottom: 2px;">Overlay Daemon</div>
+              <div style="color: var(--on-surface); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                {{ daemonPid ? `PID ${daemonPid} (Active)` : 'Standby' }}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="section-title">Live event triggers</div>
+        <section class="md3-card">
+          <div class="action-chips-grid">
+            <button type="button" class="sim-chip" @click="sendTrigger('charge')">
+              <Icons name="bolt" :size="14" />
+              <span>Charge</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('media')">
+              <Icons name="music" :size="14" />
+              <span>Media</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('volume')">
+              <Icons name="wave" :size="14" />
+              <span>Volume</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('ringer')">
+              <Icons name="vibrate" :size="14" />
+              <span>Ringer</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('notification')">
+              <Icons name="bell" :size="14" />
+              <span>Notif</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('torch')">
+              <Icons name="power" :size="14" />
+              <span>Torch</span>
+            </button>
+            <button type="button" class="sim-chip" @click="toggleReticle">
+              <Icons name="crosshair" :size="14" />
+              <span>Reticle</span>
+            </button>
+            <button type="button" class="sim-chip" @click="sendTrigger('idle')">
+              <Icons name="check" :size="14" />
+              <span>Idle</span>
+            </button>
+          </div>
+          <div style="display: flex; gap: 8px; margin-top: 10px;">
+            <button type="button" class="action-btn-secondary" style="margin-top: 0; flex: 1;" @click="sendTrigger('expand')">
+              <Icons name="maximize" :size="14" />
+              <span>Expand card</span>
+            </button>
+            <button type="button" class="action-btn-secondary" style="margin-top: 0; flex: 1;" @click="sendTrigger('collapse')">
+              <Icons name="minus" :size="14" />
+              <span>Collapse pill</span>
+            </button>
+          </div>
+        </section>
+
+        <div class="section-title">Service daemon</div>
+        <section class="md3-card">
+          <button type="button" class="action-btn-primary" @click="restartDaemon">
+            <Icons name="refresh" :size="15" />
+            <span>Restart service</span>
+          </button>
+          <button type="button" class="action-btn-secondary" @click="toggleLogView">
+            <Icons name="terminal" :size="15" />
+            <span>{{ showLogs ? 'Hide log output' : 'Inspect log output' }}</span>
+          </button>
+
+          <!-- Collapsible Terminal Output -->
+          <div v-if="showLogs" class="terminal-container">
+            <div class="terminal-header">
+              <span>overlay.log</span>
+              <button type="button" class="terminal-refresh-btn" @click="fetchLogs">Refresh</button>
+            </div>
+            <pre class="terminal-body">{{ logContent || 'No log entries recorded.' }}</pre>
+          </div>
+        </section>
+
+        <div class="section-title">Configuration profile</div>
+        <section class="md3-card">
+          <button type="button" class="action-btn-secondary" style="margin-top: 0;" @click="resetDefaults">
+            <Icons name="refresh" :size="15" />
+            <span>Reset to factory defaults</span>
+          </button>
+        </section>
+      </div>
 
       <!-- Toast Feedback Pill -->
       <transition name="toast-slide">
@@ -196,6 +1177,7 @@
           <span>{{ toastNotice }}</span>
         </div>
       </transition>
+
     </main>
   </div>
 </template>
@@ -203,12 +1185,6 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import Icons from '@/components/icons/Icons.vue'
-import LivePreviewBar from '@/components/LivePreviewBar.vue'
-import TabPlacement from '@/components/TabPlacement.vue'
-import TabGeometry from '@/components/TabGeometry.vue'
-import TabFeatures from '@/components/TabFeatures.vue'
-import TabMotion from '@/components/TabMotion.vue'
-import TabTools from '@/components/TabTools.vue'
 
 const currentTab = ref('placement')
 const dpadStep = ref(1)
@@ -242,7 +1218,6 @@ const config = reactive({
   enable_ringer: true,
   enable_notifications: true,
   enable_torch: true,
-  enable_progress: true,
   enable_haptics: true,
   stealth_ring_idle: false,
   hide_in_landscape: true,
@@ -251,7 +1226,6 @@ const config = reactive({
   auto_expand_charging: true,
   auto_expand_media: false,
   auto_expand_notification: false,
-  auto_expand_progress: false,
   expand_timeout_ms: 3500
 })
 
@@ -263,15 +1237,13 @@ const liveState = reactive({
   media_artist: '',
   media_playing: false,
   battery_pct: 100,
-  battery_charging: false,
-  download_app: '',
-  download_title: '',
-  progress_pct: 0
+  battery_charging: false
 })
 
 const isDaemonAlive = ref(true)
 const daemonPid = ref(0)
 const toastNotice = ref('')
+const currentPreset = ref('center')
 const currentMotionProfile = ref('fluid')
 const showLogs = ref(false)
 const logContent = ref('')
@@ -421,9 +1393,6 @@ async function loadConfiguration() {
     if (raw && raw.trim().startsWith('{')) {
       const parsed = JSON.parse(raw.trim())
       Object.assign(config, parsed)
-      if (typeof config.enabled !== 'boolean') {
-        config.enabled = true
-      }
     }
   } catch (e) {}
 }
@@ -567,6 +1536,70 @@ async function toggleReticle() {
   }
 }
 
+function applyPreset(type) {
+  currentPreset.value = type
+  if (type === 'center') {
+    config.cutout_x = 540
+    config.cutout_y = 55
+    config.cutout_radius = 28
+    config.x_offset = 0
+    config.y_offset = 0
+    config.pill_alignment = 'center'
+  } else if (type === 'left') {
+    config.cutout_x = 120
+    config.cutout_y = 55
+    config.cutout_radius = 28
+    config.x_offset = 0
+    config.y_offset = 0
+    config.pill_alignment = 'left'
+  } else if (type === 'right') {
+    config.cutout_x = 960
+    config.cutout_y = 55
+    config.cutout_radius = 28
+    config.x_offset = 0
+    config.y_offset = 0
+    config.pill_alignment = 'right'
+  }
+  saveConfig()
+  showToast(`Applied ${type} preset`)
+}
+
+async function autoDetectCutout() {
+  currentPreset.value = 'auto'
+  try {
+    const dispOut = await execShell('dumpsys display | grep -iE "DisplayCutout|boundingRect|mCustomCutout" | head -n 5 2>/dev/null')
+    let foundCutout = false
+    if (dispOut) {
+      const rectMatch = dispOut.match(/Rect\s*\(\s*(\d+)\s*,\s*(\d+)\s*-\s*(\d+)\s*,\s*(\d+)\s*\)/)
+      if (rectMatch) {
+        const left = parseInt(rectMatch[1])
+        const top = parseInt(rectMatch[2])
+        const right = parseInt(rectMatch[3])
+        const bottom = parseInt(rectMatch[4])
+        config.cutout_x = Math.round((left + right) / 2)
+        config.cutout_y = Math.round((top + bottom) / 2)
+        config.cutout_radius = Math.max(20, Math.round((right - left) / 2))
+        foundCutout = true
+      }
+    }
+    if (!foundCutout) {
+      const wmSize = await execShell('wm size 2>/dev/null')
+      let w = 1080
+      if (wmSize) {
+        const sizeMatch = wmSize.match(/(\d+)\s*x\s*(\d+)/)
+        if (sizeMatch) w = parseInt(sizeMatch[1])
+      }
+      config.cutout_x = Math.round(w / 2)
+      config.cutout_y = 55
+      config.cutout_radius = 28
+    }
+    saveConfig()
+    showToast(`Detected cutout: X=${config.cutout_x}, Y=${config.cutout_y}`)
+  } catch (e) {
+    showToast('Auto detection default applied')
+  }
+}
+
 function resetDefaults() {
   Object.assign(config, {
     enabled: true,
@@ -597,16 +1630,13 @@ function resetDefaults() {
     enable_ringer: true,
     enable_notifications: true,
     enable_torch: true,
-    enable_progress: true,
-    enable_haptics: true,
     stealth_ring_idle: false,
     hide_in_landscape: true,
-    spring_stiffness: 380.0,
-    spring_damping: 0.78,
+    spring_stiffness: 340.0,
+    spring_damping: 0.84,
     auto_expand_charging: true,
     auto_expand_media: false,
     auto_expand_notification: false,
-    auto_expand_progress: false,
     expand_timeout_ms: 3500
   })
   saveConfig()

@@ -86,7 +86,8 @@ if [ "$MODE" != "deploy_only" ]; then
     if command -v ecj >/dev/null 2>&1 && command -v dx >/dev/null 2>&1 && [ -n "$ANDROID_JAR" ] && [ -f "$ANDROID_JAR" ]; then
         echo "Compiling Java DEX overlay..."
         mkdir -p build/classes bin
-        ecj -cp "$ANDROID_JAR" -d build/classes $(find src -name "*.java")
+        rm -rf build/classes/*
+        ecj -cp "$ANDROID_JAR" -d build/classes src/HyperRingOverlay.java
         dx --dex --output=bin/hyperring.dex build/classes
         chmod 644 bin/hyperring.dex
         rm -rf build/classes
