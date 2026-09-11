@@ -710,6 +710,23 @@
             </label>
           </div>
 
+          <!-- Haptics Toggle -->
+          <div class="md3-list-row" style="padding: 12px 0;" @click="toggleConfig('enable_haptics')">
+            <div class="row-left">
+              <div class="icon-badge secondary">
+                <Icons name="circle" :size="16" />
+              </div>
+              <div class="row-meta">
+                <div class="row-title">Haptic micro-feedback</div>
+                <div class="row-sub">Tactile clicks and ticks on gestures and taps</div>
+              </div>
+            </div>
+            <label class="md3-switch" @click.stop>
+              <input type="checkbox" v-model="config.enable_haptics" @change="saveConfig" />
+              <span class="md3-switch-track"><span class="md3-switch-thumb"></span></span>
+            </label>
+          </div>
+
         </section>
 
         <!-- HyperOS Media Experience -->
@@ -1201,6 +1218,7 @@ const config = reactive({
   enable_ringer: true,
   enable_notifications: true,
   enable_torch: true,
+  enable_haptics: true,
   enable_hyperdl: true,
   enable_hypercore: true,
   stealth_ring_idle: false,

@@ -29,11 +29,14 @@ import android.net.Uri;
 import java.io.InputStream;
 import java.util.List;
 import android.os.BatteryManager;
+import android.os.Build;
 import android.os.FileObserver;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.util.DisplayMetrics;
 import android.graphics.Outline;
 import android.os.HandlerThread;
@@ -341,6 +344,27 @@ public class HyperRingOverlay {
     private static float cachedMarqueeRight = -1f;
 
     private static final Path smoothSquirclePath = new Path();
+
+    // Haptics engine
+    private static Vibrator vibrator = null;
+    private static boolean enableHaptics = true;
+
+    private static void performHaptic(int type) {
+        if (!enableHaptics || context == null) return;
+        try {
+            if (vibrator == null) {
+                vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (vibrator != null && vibrator.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    int effectId = (type == 1) ? VibrationEffect.EFFECT_CLICK : VibrationEffect.EFFECT_TICK;
+                    vibrator.vibrate(VibrationEffect.createPredefined(effectId));
+                } else {
+                    vibrator.vibrate(12);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
 
     // Touch gesture tracking
     private static float touchDownY = 0f;
@@ -1271,6 +1295,7 @@ public class HyperRingOverlay {
                         float deltaX = x - touchDownX;
                         if (Math.abs(deltaX) > dpToPx(28) && totalDistY < dpToPx(24) && duration < 500) {
                             if (currentIsland == STATE_MEDIA) {
+                                performHaptic(0);
                                 if (deltaX > 0) {
                                     skipMediaNext();
                                 } else {
@@ -1279,6 +1304,7 @@ public class HyperRingOverlay {
                                 return true;
                             } else if (currentIsland == STATE_NOTIFICATION) {
                                 // Swipe sideways dismisses active notification island
+                                performHaptic(0);
                                 startCollapse();
                                 return true;
                             }
@@ -1348,6 +1374,7 @@ public class HyperRingOverlay {
     private static void expandCard() {
         if (isExpanded) return;
         isExpanded = true;
+        performHaptic(1);
         if (handler != null) {
             handler.removeCallbacks(autoCollapseRunnable);
             if (expandTimeoutMs > 0 && !previewLock) {
@@ -1374,6 +1401,7 @@ public class HyperRingOverlay {
     private static void collapseCard() {
         if (!isExpanded) return;
         isExpanded = false;
+        performHaptic(0);
         if (handler != null) {
             handler.removeCallbacks(autoCollapseRunnable);
         }
@@ -1416,6 +1444,7 @@ public class HyperRingOverlay {
                 float castBtnX = viewW - dpToPx(24);
                 float castBtnY = artTop + artSize * 0.40f;
                 if (Math.abs(x - castBtnX) < dpToPx(22) && Math.abs(y - castBtnY) < dpToPx(22)) {
+                    performHaptic(0);
                     triggerMediaOutputRoute();
                     return;
                 }
@@ -1432,6 +1461,7 @@ public class HyperRingOverlay {
                 float btnHitRadius = dpToPx(22);
 
                 if (Math.abs(y - btnY) < btnHitRadius) {
+                    performHaptic(0);
                     if (Math.abs(x - b3X) < dpToPx(24)) {
                         toggleMediaPlayback();
                         return;
@@ -1457,6 +1487,7 @@ public class HyperRingOverlay {
                 float barW = viewW - dpToPx(124);
 
                 if (mediaTrackDuration > 0 && Math.abs(y - barY) < dpToPx(14) && x >= barLeft - dpToPx(8) && x <= barLeft + barW + dpToPx(8)) {
+                    performHaptic(0);
                     float fraction = Math.max(0f, Math.min(1f, (x - barLeft) / barW));
                     long seekTarget = (long) (fraction * mediaTrackDuration);
                     seekMediaTo(seekTarget);
@@ -2887,6 +2918,7 @@ public class HyperRingOverlay {
                     handler.removeCallbacks(audioThrottleRunnable);
                 }
                 if (isCollapsing || currentIsland == STATE_IDLE) return;
+                performHaptic(0);
                 if (!isExpanded && currentIsland == STATE_VOLUME && isMediaPlaying && enableMedia) {
                     // Smoothly morph cross-fade back to active media pill instead of collapsing into hole and reopening
                     showIsland(STATE_MEDIA, 0);
@@ -4556,6 +4588,7 @@ public class HyperRingOverlay {
             enableRinger        = parseBool(json, "enable_ringer", enableRinger);
             enableNotifications = parseBool(json, "enable_notifications", enableNotifications);
             enableTorch         = parseBool(json, "enable_torch", enableTorch);
+            enableHaptics       = parseBool(json, "enable_haptics", enableHaptics);
             enableHyperDL       = parseBool(json, "enable_hyperdl", enableHyperDL);
             enableHyperCore     = parseBool(json, "enable_hypercore", enableHyperCore);
             stealthRingIdle     = parseBool(json, "stealth_ring_idle", stealthRingIdle);
